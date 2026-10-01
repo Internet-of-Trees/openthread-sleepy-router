@@ -59,3 +59,9 @@ tests/nexus/nexus_*
 # Misc
 DartConfiguration.tcl
 third_party/mbedtls/openthread-mbedtls-config.h
+
+# Local scratch / tool output (not part of OpenThread)
+/nexus_test/
+*.replay
+/doxygen/html/
+/doxygen/latex/
