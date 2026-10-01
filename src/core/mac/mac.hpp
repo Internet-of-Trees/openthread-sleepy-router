@@ -569,6 +569,24 @@ public:
      */
     void ClearMode2Key(void) { mMode2KeyMaterial.Clear(); }
 
+#if OPENTHREAD_FTD
+
+    // The CSL period (in units of 10 symbols) a Sleepy Router advertises once `otThreadSetSleepyRouterMode()`
+    // enables it. `SetSleepyRouterCslPeriod(0)` (the default, and what `SetSleepyRouterMode(false)` restores)
+    // disables the Sleepy Router CSL-IE advertising/scheduling paths entirely.
+    static constexpr uint16_t kDefaultSleepyRouterCslPeriod = 1000;
+
+    /**
+     * Sets the CSL period for sleepy router.
+     *
+     * @param[in]  aPeriod  The CSL period in 10 symbols. Zero disables Sleepy Router CSL behavior.
+     */
+    void SetSleepyRouterCslPeriod(uint16_t aPeriod) { mSleepyRouterPeriod = aPeriod; }
+
+    uint16_t GetSleepyRouterCslPeriod(void) const { return mSleepyRouterPeriod; }
+
+#endif
+
 #if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
     /**
      * Gets the CSL channel.
@@ -905,7 +923,8 @@ private:
     ChannelMask mScanChannelMask;
     uint8_t     mMaxFrameRetriesDirect;
 #if OPENTHREAD_FTD
-    uint8_t mMaxFrameRetriesIndirect;
+    uint8_t  mMaxFrameRetriesIndirect;
+    uint16_t mSleepyRouterPeriod;
 #endif
 #if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
     TimeMilli mCslTxFireTime;

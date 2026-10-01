@@ -466,6 +466,10 @@ private:
     void HandleSentFrame(Mac::TxFrame &aFrame, Error aError);
     void UpdateSendMessage(Error aFrameTxError, Mac::Address &aMacDest, Neighbor *aNeighbor);
     void FinalizeMessageDirectTx(Message &aMessage, Error aError);
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+    void FinalizeMessageIndirectTxsToParent(Message &aMessage);
+#endif
+
     void FinalizeAndRemoveMessage(Message &aMessage, Error aError, MessageAction aAction);
     bool RemoveMessageIfNoPendingTx(Message &aMessage);
 

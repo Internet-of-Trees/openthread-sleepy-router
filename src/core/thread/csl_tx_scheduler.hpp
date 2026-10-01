@@ -53,7 +53,7 @@ namespace ot {
  */
 
 class CslNeighbor;
-
+class Parent;
 /**
  * Implements CSL tx scheduling functionality.
  */
@@ -190,9 +190,9 @@ private:
 
     void RescheduleCslTx(void);
 
-    uint32_t GetNextCslTransmissionDelay(const CslNeighbor &aCslNeighbor,
-                                         uint32_t          &aDelayFromLastRx,
-                                         uint32_t           aAheadUs) const;
+    uint32_t GetNextCslTransmissionDelay(const CslTxScheduler::NeighborInfo &aCslNeighbor,
+                                         uint32_t                           &aDelayFromLastRx,
+                                         uint32_t                            aAheadUs) const;
 
     // Callbacks from `Mac`
     Mac::TxFrame *HandleFrameRequest(Mac::TxFrames &aTxFrames);

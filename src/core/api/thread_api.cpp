@@ -93,6 +93,16 @@ otError otThreadSetLinkMode(otInstance *aInstance, otLinkModeConfig aConfig)
     return AsCoreType(aInstance).Get<Mle::Mle>().SetDeviceMode(Mle::DeviceMode(aConfig));
 }
 
+void otThreadSetSleepyRouterMode(otInstance *aInstance, bool aEnable)
+{
+    AsCoreType(aInstance).Get<Mle::Mle>().SetSleepyRouterMode(aEnable);
+}
+
+bool otThreadIsSleepyRouterMode(otInstance *aInstance)
+{
+    return AsCoreType(aInstance).Get<Mle::Mle>().IsSleepyRouterMode();
+}
+
 void otThreadGetNetworkKey(otInstance *aInstance, otNetworkKey *aNetworkKey)
 {
     AsCoreType(aInstance).Get<KeyManager>().GetNetworkKey(AsCoreType(aNetworkKey));

@@ -71,6 +71,13 @@ void MessageFramer::PrepareMacHeaders(Mac::TxFrame &aTxFrame, Mac::TxFrame::Info
 
     if (neighbor == nullptr)
     {
+#if OPENTHREAD_FTD
+        if (aTxFrameInfo.mAddrs.mDestination.IsBroadcast() && Get<Mac::Mac>().GetSleepyRouterCslPeriod() > 0)
+        {
+            aTxFrameInfo.mAppendCslIe = true;
+            aTxFrameInfo.mVersion     = Mac::Frame::kVersion2015;
+        }
+#endif
     }
 #if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
     else if (Get<Mac::Mac>().IsCslEnabled())
@@ -79,10 +86,21 @@ void MessageFramer::PrepareMacHeaders(Mac::TxFrame &aTxFrame, Mac::TxFrame::Info
         aTxFrameInfo.mVersion     = Mac::Frame::kVersion2015;
     }
 #endif
-#if OPENTHREAD_FTD && OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
-    else if ((Get<ChildTable>().Contains(*neighbor) && static_cast<const Child *>(neighbor)->IsCslSynchronized()))
+
+#if OPENTHREAD_FTD
+    else if (Get<ChildTable>().Contains(*neighbor))
     {
-        aTxFrameInfo.mVersion = Mac::Frame::kVersion2015;
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+        if (static_cast<const Child *>(neighbor)->IsCslSynchronized())
+        {
+            aTxFrameInfo.mVersion = Mac::Frame::kVersion2015;
+        }
+#endif
+        if (Get<Mac::Mac>().GetSleepyRouterCslPeriod() > 0)
+        {
+            aTxFrameInfo.mAppendCslIe = true;
+            aTxFrameInfo.mVersion     = Mac::Frame::kVersion2015;
+        }
     }
 #endif
 #if OPENTHREAD_CONFIG_MLE_LINK_METRICS_INITIATOR_ENABLE

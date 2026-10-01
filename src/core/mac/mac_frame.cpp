@@ -179,7 +179,7 @@ void TxFrame::Info::PrepareHeadersIn(TxFrame &aTxFrame) const
 #if OPENTHREAD_CONFIG_TIME_SYNC_ENABLE
     fcf |= (mAppendTimeIe ? kFcfIePresent : 0);
 #endif
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_FTD
     fcf |= (mAppendCslIe ? kFcfIePresent : 0);
 #endif
 #endif
@@ -227,8 +227,8 @@ void TxFrame::Info::PrepareHeadersIn(TxFrame &aTxFrame) const
         builder.Append<TimeIe>()->Init();
     }
 #endif
-
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
+// TODO: REENABLE OPENTHREAD_FTD MACRO
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_FTD
     if (mAppendCslIe)
     {
         builder.Append<HeaderIe>()->Init(CslIe::kHeaderIeId, sizeof(CslIe));
@@ -1218,7 +1218,7 @@ exit:
 
 #endif // OPENTHREAD_CONFIG_MAC_HEADER_IE_SUPPORT
 
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
+#if (OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_FTD) && OPENTHREAD_CONFIG_MAC_HEADER_IE_SUPPORT
 void Frame::SetCslIe(uint16_t aCslPeriod, uint16_t aCslPhase)
 {
     CslIe *csl = GetCslIe();
@@ -1234,7 +1234,8 @@ exit:
 bool Frame::HasCslIe(void) const { return GetCslIe() != nullptr; }
 #endif // OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
 
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+#if (OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE || OPENTHREAD_FTD) && \
+    OPENTHREAD_CONFIG_MAC_HEADER_IE_SUPPORT
 const CslIe *Frame::GetCslIe(void) const
 {
     const uint8_t *cur;

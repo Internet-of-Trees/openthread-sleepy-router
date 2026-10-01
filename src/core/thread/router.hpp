@@ -33,9 +33,7 @@
 
 #ifndef OT_CORE_THREAD_ROUTER_HPP_
 #define OT_CORE_THREAD_ROUTER_HPP_
-
 #include "openthread-core-config.h"
-
 #include "thread/neighbor.hpp"
 
 namespace ot {
@@ -45,7 +43,7 @@ class Parent;
 /**
  * Represents a Thread Router
  */
-class Router : public Neighbor
+class Router : public CslNeighbor
 {
 public:
     /**
@@ -269,6 +267,51 @@ public:
 #endif
     }
 
+    // #if OPENTHREAD_FTD
+    //     /**
+    //      * Gets the CSL period of this router.
+    //      *
+    //      * @returns The CSL period of this router.
+    //      */
+    //     uint16_t GetCslPeriod(void) const { return mCslPeriod; }
+    //
+    //     /**
+    //      * Sets the CSL period of this router.
+    //      *
+    //      * @param[in]  aCslPeriod  The CSL period of this router.
+    //      */
+    //     void SetCslPeriod(uint16_t aCslPeriod) { mCslPeriod = aCslPeriod; }
+    //
+    //     /**
+    //      * Gets the CSL phase of this router.
+    //      *
+    //      * @returns The CSL phase of this router.
+    //      */
+    //     uint16_t GetCslPhase(void) const { return mCslPhase; }
+    //
+    //     /**
+    //      * Sets the CSL phase of this router.
+    //      *
+    //      * @param[in]  aCslPhase  The CSL phase of this router.
+    //      */
+    //     void SetCslPhase(uint16_t aCslPhase) { mCslPhase = aCslPhase; }
+    //
+    //     /**
+    //      * Indicates whether or not the CSL parameters (period and phase) are synchronized with this router.
+    //      *
+    //      * @retval TRUE   If the CSL parameters are synchronized with this router.
+    //      * @retval FALSE  If the CSL parameters are not synchronized with this router.
+    //      */
+    //     bool IsCslSynchronized(void) const { return mCslSynchronized; }
+    //
+    //     /**
+    //      * Sets whether or not the CSL parameters (period and phase) are synchronized with this router.
+    //      *
+    //      * @param[in]  aSynchronized  Boolean indicating whether or not the CSL parameters are synchronized with this
+    //      *                            router.
+    //      */
+    //     void SetCslSynchronized(bool aSynchronized) { mCslSynchronized = aSynchronized; }
+    // #endif
     /**
      * Clears the parent entry.
      */
@@ -309,6 +352,12 @@ private:
 #if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
     Mac::CslAccuracy mCslAccuracy; // CSL accuracy (clock accuracy in ppm and uncertainty).
 #endif
+    //
+    // #if OPENTHREAD_FTD
+    //     uint16_t mCslPeriod;
+    //     uint16_t mCslPhase;
+    //     bool     mCslSynchronized;
+    // #endif
 };
 
 DefineCoreType(otRouterInfo, Router::Info);

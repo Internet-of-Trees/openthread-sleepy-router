@@ -263,6 +263,46 @@ template <> otError Interpreter::Process<Cmd("version")>(Arg aArgs[])
     return error;
 }
 
+#if OPENTHREAD_FTD
+template <> otError Interpreter::Process<Cmd("sleepyrouter")>(Arg aArgs[])
+{
+    otError error = OT_ERROR_NONE;
+
+    /**
+     * @cli sleepyrouter (enable, disable)
+     * @code
+     * sleepyrouter enable
+     * Done
+     * @endcode
+     * @code
+     * sleepyrouter disable
+     * Done
+     * @endcode
+     * @cparam sleepyrouter  @ca{enable|disable}
+     * @par api_copy
+     * #otThreadSetSleepyEndDeviceMode
+     */
+    if (aArgs[0].IsEmpty())
+    {
+        OutputLine(otThreadIsSleepyRouterMode(GetInstancePtr()) ? "Enabled" : "Disabled");
+    }
+    else if (aArgs[0] == "enable")
+    {
+        otThreadSetSleepyRouterMode(GetInstancePtr(), true);
+    }
+    else if (aArgs[0] == "disable")
+    {
+        otThreadSetSleepyRouterMode(GetInstancePtr(), false);
+    }
+    else
+    {
+        error = OT_ERROR_INVALID_COMMAND;
+    }
+
+    return error;
+}
+#endif // OPENTHREAD
+
 template <> otError Interpreter::Process<Cmd("reset")>(Arg aArgs[])
 {
     otError error = OT_ERROR_NONE;
@@ -5732,7 +5772,7 @@ template <> otError Interpreter::Process<Cmd("region")>(Arg aArgs[])
 
         regionCode = static_cast<uint16_t>(static_cast<uint16_t>(aArgs[0].GetCString()[0]) << 8) +
                      static_cast<uint16_t>(aArgs[0].GetCString()[1]);
-        error = otLinkSetRegion(GetInstancePtr(), regionCode);
+        error      = otLinkSetRegion(GetInstancePtr(), regionCode);
     }
 
 exit:
@@ -8523,7 +8563,10 @@ void Interpreter::SetCommandTimeout(uint32_t aTimeoutMilli)
 
 otError Interpreter::ProcessCommand(Arg aArgs[])
 {
-#define CmdEntry(aCommandString) {aCommandString, &Interpreter::Process<Cmd(aCommandString)>}
+#define CmdEntry(aCommandString)                                   \
+    {                                                              \
+        aCommandString, &Interpreter::Process<Cmd(aCommandString)> \
+    }
 
     static constexpr Command kCommands[] = {
 #if OPENTHREAD_FTD || OPENTHREAD_MTD
@@ -8742,6 +8785,9 @@ otError Interpreter::ProcessCommand(Arg aArgs[])
         CmdEntry("service"),
 #endif
         CmdEntry("singleton"),
+#if OPENTHREAD_FTD
+        CmdEntry("sleepyrouter"),
+#endif
 #if OPENTHREAD_CONFIG_SNTP_CLIENT_ENABLE
         CmdEntry("sntp"),
 #endif

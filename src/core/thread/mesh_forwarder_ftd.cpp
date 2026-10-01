@@ -87,6 +87,22 @@ void MeshForwarder::SendMessage(OwnedPtr<Message> aMessagePtr)
                         mIndirectSender.AddMessageForSleepyChild(message, child);
                     }
                 }
+
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+                // GAMA: a Router has no per-address registration like a Child (`HasIp6Address()` doesn't
+                // apply), so there is no equivalent of `destinedForAll`/per-address filtering here — any
+                // mesh-wide multicast reaching this point (already excluded from MPL retx by the enclosing
+                // check) needs to reach every CSL-synchronized Router-peer, guaranteed, since a sleeping
+                // Router's radio may simply not be on when the one-shot direct broadcast goes out.
+                for (Router &router : Get<RouterTable>())
+                {
+                    if ((router.GetState() == Neighbor::kStateValid) && router.IsCslSynchronized() &&
+                        (router.GetCslPeriod() > 0))
+                    {
+                        mIndirectSender.AddMessageForSleepyRouter(message, router);
+                    }
+                }
+#endif
             }
         }
         else // Destination is unicast
@@ -100,7 +116,47 @@ void MeshForwarder::SendMessage(OwnedPtr<Message> aMessagePtr)
             }
             else
             {
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+                // GAMA if im a child, check if my parent is csl-synchronized to schedule indirect transmission
+                if (Get<Mle::Mle>().GetRole() == Mle::kRoleChild)
+                {
+                    Parent &parent = Get<Mle::Mle>().GetParent();
+                    if ((parent.GetState() == Neighbor::kStateValid) && parent.IsCslSynchronized() &&
+                        parent.GetCslPeriod() > 0)
+                    {
+                        mIndirectSender.AddMessageForSleepyParent(message, parent);
+                    }
+                    else
+                    {
+                        message.SetDirectTransmission();
+                    }
+                }
+                else
+                {
+                    // if i'm a Router, i might have to relay the message to Router peers
+                    if (neighbor != nullptr && Get<RouterTable>().Contains(*neighbor))
+                    {
+                        Router *router = static_cast<Router *>(neighbor);
+                        if (router->IsCslSynchronized() && (router->GetCslPeriod() > 0))
+                        {
+                            mIndirectSender.AddMessageForSleepyRouter(message, *router);
+                        }
+                        else
+                        {
+                            message.SetDirectTransmission();
+                        }
+                    }
+                    else
+                    {
+                        message.SetDirectTransmission();
+                    }
+                }
+#else
+                // Sleepy Router/Parent CSL indirect tx requires `OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE`
+                // (itself unavailable without Header IE support, e.g. on a Thread 1.1-only build) -- fall back
+                // to stock direct transmission.
                 message.SetDirectTransmission();
+#endif
             }
         }
 
@@ -435,6 +491,27 @@ Error MeshForwarder::UpdateIp6RouteFtd(const Ip6::Header &aIp6Header, Message &a
         mAddMeshHeader = true;
 #if OPENTHREAD_CONFIG_MAC_COLLISION_AVOIDANCE_DELAY_ENABLE
         mDelayNextTx = true;
+#endif
+    }
+    else
+    {
+        // GAMA: the next hop is the final destination (a direct Router-peer, not further mesh
+        // relaying) — if that peer is a sleepy, CSL-synchronized Router, convert this message to
+        // indirect now instead of attempting a direct transmission that would just fail with
+        // NoAck while the peer is asleep. This is the "second chance" `SendMessage()` doesn't get:
+        // a message whose destination still needed Address Resolution at `SendMessage()` time is
+        // conservatively marked for direct transmission there (the neighbor isn't known yet), and
+        // is only retried as direct once resolved (`HandleResolved()` never re-evaluates it). This
+        // mirrors the sleepy-child-ALOC handling above, which has the same "re-check once the real
+        // destination is known" shape.
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+        Router *router = Get<RouterTable>().FindRouterByRloc16(mMacAddrs.mDestination.GetShort());
+
+        if ((router != nullptr) && router->IsCslSynchronized() && (router->GetCslPeriod() > 0))
+        {
+            mIndirectSender.AddMessageForSleepyRouter(aMessage, *router);
+            aMessage.ClearDirectTransmission();
+        }
 #endif
     }
 

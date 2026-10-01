@@ -78,6 +78,7 @@ Mac::Mac(Instance &aInstance)
     , mMaxFrameRetriesDirect(kDefaultMaxFrameRetriesDirect)
 #if OPENTHREAD_FTD
     , mMaxFrameRetriesIndirect(kDefaultMaxFrameRetriesIndirect)
+    , mSleepyRouterPeriod(0)
 #if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
     , mCslTxFireTime(TimeMilli::kMaxDuration)
 #endif
@@ -514,6 +515,15 @@ void Mac::UpdateIdleMode(void)
 {
     bool shouldSleep = !mRxOnWhenIdle && !mPromiscuous;
 
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
+    // A device can have `mRxOnWhenIdle == true` (e.g. a Sleepy Router, which must stay `RxOnWhenIdle` for
+    // Router eligibility, see `Mle::SetSleepyRouterMode()`) while still having its CSL receiver enabled. In
+    // that case the radio still needs to enter the Sleep state so `SubMac`'s CSL sample/sleep state machine
+    // (only engaged from `Sleep()`) can duty-cycle it according to the CSL schedule, instead of the radio
+    // just staying in continuous Receive as `!mRxOnWhenIdle` alone would decide.
+    shouldSleep = shouldSleep || (IsCslEnabled() && !mPromiscuous);
+#endif
+
     VerifyOrExit(mOperation == kOperationIdle);
 
     if (!mRxOnWhenIdle)
@@ -903,8 +913,9 @@ void Mac::ProcessTransmitSecurity(TxFrame &aFrame)
     VerifyOrExit(aFrame.GetTimeIeOffset() == 0);
 #endif
 
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
-    // Transmit security will be processed after time IE content is updated.
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_FTD
+    // Transmit security will be processed after CSL IE content is updated (this also covers a Sleepy
+    // Router patching its own CSL phase/period into outgoing frames in `BeginTransmit()`).
     VerifyOrExit(!aFrame.IsCslIePresent());
 #endif
 
@@ -1091,6 +1102,33 @@ void Mac::BeginTransmit(void)
         mShouldDelaySleep = frame->GetFramePending();
         LogDebg("Delay sleep for pending tx");
     }
+#endif
+
+#if OPENTHREAD_FTD && OPENTHREAD_CONFIG_MAC_HEADER_IE_SUPPORT
+    // `Frame::GetCslIe()`/`CslIe` only exist when Header IE support is compiled in (itself only
+    // available for Thread >= 1.2, or with time sync enabled -- see `OPENTHREAD_CONFIG_MAC_HEADER_IE_SUPPORT`
+    // in config/mac.h). Gating this on `OPENTHREAD_FTD` alone compiled fine on every config this fork was
+    // actually built/tested against (ot-rfsim, Nexus), all of which default to a modern Thread version, but
+    // broke `script/check-simulation-build`'s Thread-1.1 FTD variant, which has no Header IE support at all.
+    if (GetSleepyRouterCslPeriod() > 0 && frame->GetType() == Frame::kTypeData)
+    {
+        if (frame->IsCslIePresent())
+        {
+            uint16_t currentPeriod = GetSleepyRouterCslPeriod();
+            uint32_t periodUs      = static_cast<uint32_t>(currentPeriod) * 160;
+            uint64_t now           = otPlatRadioGetNow(&GetInstance());
+            uint32_t elapsedUs     = static_cast<uint32_t>(now % periodUs);
+            uint32_t remainingUs   = periodUs - elapsedUs;
+            uint16_t currentPhase  = static_cast<uint16_t>(remainingUs / 160);
+            CslIe   *csl           = frame->GetCslIe();
+            if (csl != nullptr)
+            {
+                csl->SetPeriod(currentPeriod);
+                csl->SetPhase(currentPhase);
+            }
+        }
+    }
+
 #endif
 
 #if OPENTHREAD_CONFIG_MULTI_RADIO
@@ -2464,10 +2502,43 @@ void Mac::UpdateCslParameters(void)
     VerifyOrExit(mIsCslEnabled);
 
     cslChannel = GetCslChannel() ? GetCslChannel() : mPanChannel;
-    mLinks.SetCslParams(GetCslPeriod(), cslChannel, Get<Mle::Mle>().GetParent().GetRloc16(),
-                        Get<Mle::Mle>().GetParent().GetExtAddress());
-    Get<DataPollSender>().RecalculatePollPeriod();
-    Get<Mle::Mle>().ScheduleChildUpdateRequest();
+
+    if (Get<Mle::Mle>().IsChild())
+    {
+        mLinks.SetCslParams(GetCslPeriod(), cslChannel, Get<Mle::Mle>().GetParent().GetRloc16(),
+                            Get<Mle::Mle>().GetParent().GetExtAddress());
+        Get<DataPollSender>().RecalculatePollPeriod();
+        Get<Mle::Mle>().ScheduleChildUpdateRequest();
+    }
+#if OPENTHREAD_FTD
+    else
+    {
+        // A Sleepy Router has no single Parent to report to or filter CSL reception against (unlike a
+        // Child, whose CSL window exists to receive from exactly one Parent, a Sleepy Router may receive CSL
+        // traffic from any of several Router-peers), and skip the Child-only housekeeping (poll period
+        // recalculation, Child Update Request) — scheduling a Child Update Request here with no valid Parent
+        // is what was causing a Sleepy Router (or Leader) to spuriously detach as soon as its CSL receiver
+        // came up.
+        //
+        // We would like to pass no source-match filter at all here (mirroring how CSL is disabled in
+        // `UpdateCslState()` above), but `otPlatRadioEnableCsl()` is not guaranteed to accept an invalid
+        // short address as "no filter" -- the simulation platform (`ot-rfsim`) silently ignores the address
+        // arguments entirely, but the Nexus platform validates them and rejects the call outright, leaving
+        // its own `mCslPeriod` at 0 while `Mac` itself believes CSL is enabled with a real, non-zero period.
+        // That mismatch went unnoticed (no error is propagated back from `SetCslParams()`) until a later
+        // transmit divides by the platform's still-zero `mCslPeriod` in `ComputeCslPhase()`
+        // (examples/platforms/utils/mac_frame.cpp) -- a real SIGFPE, not a test-timing artifact, caught by
+        // the Nexus regression test (tests/nexus/test_sleepy_router_peer.cpp) but never before on OTNS/
+        // ot-rfsim. So we pass our own RLOC16 as a syntactically valid placeholder instead: it can never
+        // spuriously match a real peer's source address (a device never receives a frame claiming to be
+        // from itself), but it does not solve the underlying single-peer CSL receiver filter limitation
+        // documented in docs/sleepy-router/DESIGN_LOG.md section 3 (Tappa F) and section 6 (future work).
+        ExtAddress extAddress;
+
+        extAddress.Fill(0);
+        mLinks.SetCslParams(GetCslPeriod(), cslChannel, Get<Mle::Mle>().GetRloc16(), extAddress);
+    }
+#endif
 
 exit:
     return;
@@ -2499,9 +2570,40 @@ void Mac::ProcessCsl(const RxFrame &aFrame, const Address &aSrcAddr)
 
 #if OPENTHREAD_FTD
     neighbor = Get<ChildTable>().FindChild(aSrcAddr, Child::kInStateAnyExceptInvalid);
-#else
-    OT_UNUSED_VARIABLE(aSrcAddr);
 #endif
+
+    if (neighbor == nullptr)
+    {
+        Parent *parent = &Get<Mle::Mle>().GetParent();
+
+        // Controlliamo se l'indirizzo del mittente corrisponde al MAC o al RLOC16 del nostro Padre
+        if (parent->GetState() == Router::kStateValid &&
+            (parent->GetExtAddress() == aSrcAddr.GetExtended() ||
+             (aSrcAddr.IsShort() && parent->GetRloc16() == aSrcAddr.GetShort())) &&
+            csl->GetPeriod() >= kMinCslIePeriod)
+        {
+            parent->SetCslPeriod(csl->GetPeriod());
+            parent->SetCslPhase(csl->GetPhase());
+            parent->SetCslSynchronized(true);
+            parent->SetCslLastHeard(TimerMilli::GetNow());
+            parent->SetLastRxTimestamp(aFrame.GetTimestamp());
+            ExitNow();
+        }
+
+#if OPENTHREAD_FTD
+        {
+            // `RouterTable::FindNeighbor()` is private; `NeighborTable::FindNeighbor()` is the public
+            // facade for it, and only searches Child/Router tables when we are ourselves a router or
+            // leader (otherwise it looks at the Parent only, which we already handled above).
+            Neighbor *routerNeighbor = Get<NeighborTable>().FindNeighbor(aSrcAddr);
+
+            if ((routerNeighbor != nullptr) && Get<RouterTable>().Contains(*routerNeighbor))
+            {
+                neighbor = static_cast<Router *>(routerNeighbor);
+            }
+        }
+#endif
+    }
 
     VerifyOrExit(neighbor != nullptr);
 

@@ -93,7 +93,7 @@ void CslTxScheduler::Clear(void)
 }
 
 /**
- * Always finds the most recent CSL tx among all children,
+ * Always finds the most recent CSL tx among all children (now any csl neighbor),
  * and requests `Mac` to do CSL tx at specific time. It shouldn't be called
  * when `Mac` is already starting to do the CSL tx (indicated by `mCslTxMessage`).
  */
@@ -101,7 +101,9 @@ void CslTxScheduler::RescheduleCslTx(void)
 {
     uint32_t     minDelayTime = Time::kMaxDuration;
     CslNeighbor *bestNeighbor = nullptr;
+    uint32_t     parentCslTxDelay;
 
+    // we can now include Routers in the available csl tx's
 #if OPENTHREAD_FTD
     for (Child &child : Get<ChildTable>().Iterate(Child::kInStateAnyExceptInvalid))
     {
@@ -121,6 +123,50 @@ void CslTxScheduler::RescheduleCslTx(void)
             bestNeighbor = &child;
         }
     }
+    // check in all the routers too (will need to include the info in the routing table)
+    for (Router &router : Get<RouterTable>())
+    {
+        uint32_t delay;
+        uint32_t cslTxDelay;
+
+        if (router.GetState() == Neighbor::kStateValid)
+        {
+            if (!router.IsCslSynchronized() || router.GetIndirectMessageCount() == 0)
+            {
+                continue;
+            }
+
+            delay = GetNextCslTransmissionDelay(router, cslTxDelay, mCslFrameRequestAheadUs);
+
+            if (delay < minDelayTime)
+            {
+                minDelayTime = delay;
+                bestNeighbor = &router;
+            }
+        }
+    }
+#endif
+
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+    // maybe this path needs to stay because if im a med i still need to check my parents, but maybe i can remove
+    // because above this i check routers so i can generalize everything (who knows)
+    Parent &parent = Get<Mle::Mle>().GetParent();
+    // if i'm the child and my parent is in a valid state
+    if (Get<Mle::Mle>().GetRole() == Mle::kRoleChild && parent.GetState() == Neighbor::kStateValid)
+    {
+        // if my parent is csl-synchronized and valid, and has something ready, calculate his delay too
+        if (parent.IsCslSynchronized() && parent.GetIndirectMessage() != nullptr)
+        {
+            uint32_t parentDelay;
+            parentDelay = GetNextCslTransmissionDelay(parent, parentCslTxDelay, mCslFrameRequestAheadUs);
+
+            if (parentDelay < minDelayTime)
+            {
+                minDelayTime = parentDelay;
+                bestNeighbor = &parent;
+            }
+        }
+    }
 #endif
 
     if (bestNeighbor != nullptr)
@@ -131,14 +177,13 @@ void CslTxScheduler::RescheduleCslTx(void)
     mCslTxNeighbor = bestNeighbor;
 }
 
-uint32_t CslTxScheduler::GetNextCslTransmissionDelay(const CslNeighbor &aCslNeighbor,
-                                                     uint32_t          &aDelayFromLastRx,
-                                                     uint32_t           aAheadUs) const
+uint32_t CslTxScheduler::GetNextCslTransmissionDelay(const CslTxScheduler::NeighborInfo &aCslNeighbor,
+                                                     uint32_t                           &aDelayFromLastRx,
+                                                     uint32_t                            aAheadUs) const
 {
     uint64_t radioNow   = Get<Radio>().GetNow();
     uint32_t periodInUs = aCslNeighbor.GetCslPeriod() * kUsPerTenSymbols;
 
-    /* see CslTxScheduler::NeighborInfo::mCslPhase */
     uint64_t firstTxWindow = aCslNeighbor.GetLastRxTimestamp() + aCslNeighbor.GetCslPhase() * kUsPerTenSymbols;
     uint64_t nextTxWindow  = radioNow - (radioNow % periodInUs) + (firstTxWindow % periodInUs);
 
@@ -153,7 +198,7 @@ uint32_t CslTxScheduler::GetNextCslTransmissionDelay(const CslNeighbor &aCslNeig
 }
 
 #if OPENTHREAD_CONFIG_RADIO_LINK_IEEE_802_15_4_ENABLE
-
+// the function changed to accomodate Router / Parent handling too
 Mac::TxFrame *CslTxScheduler::HandleFrameRequest(Mac::TxFrames &aTxFrames)
 {
     Mac::TxFrame *frame = nullptr;
@@ -162,6 +207,11 @@ Mac::TxFrame *CslTxScheduler::HandleFrameRequest(Mac::TxFrames &aTxFrames)
 
     VerifyOrExit(mCslTxNeighbor != nullptr);
     VerifyOrExit(mCslTxNeighbor->IsCslSynchronized());
+
+    LogInfo("HandleFrameRequest: mCslTxNeighbor=%s isParent=%s GetIndirectMessage()=%s",
+            (mCslTxNeighbor == nullptr) ? "null" : "non-null",
+            (mCslTxNeighbor == static_cast<CslNeighbor *>(&Get<Mle::Mle>().GetParent())) ? "true" : "false",
+            (mCslTxNeighbor->GetIndirectMessage() == nullptr) ? "null" : "non-null");
 
 #if OPENTHREAD_CONFIG_MULTI_RADIO
     frame = &aTxFrames.GetTxFrame(Mac::kRadioTypeIeee802154);
@@ -238,14 +288,10 @@ Mac::TxFrame *CslTxScheduler::HandleFrameRequest(Mac::TxFrames &) { return nullp
 
 void CslTxScheduler::HandleSentFrame(const Mac::TxFrame &aFrame, Error aError)
 {
+    mCslTxMessage         = nullptr;
     CslNeighbor *neighbor = mCslTxNeighbor;
-
-    mCslTxMessage = nullptr;
-
     VerifyOrExit(neighbor != nullptr);
-
     mCslTxNeighbor = nullptr;
-
     HandleSentFrame(aFrame, aError, *neighbor);
 
 exit:

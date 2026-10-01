@@ -37,6 +37,8 @@
 
 namespace ot {
 
+RegisterLogModule("IndirectSender");
+
 #if OPENTHREAD_FTD || OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
 
 const Mac::Address &IndirectSender::NeighborInfo::GetMacAddress(Mac::Address &aMacAddress) const
@@ -86,6 +88,13 @@ void IndirectSender::Stop(void)
 
 exit:
     mEnabled = false;
+}
+
+bool IndirectSender::AcceptAnyMessage(const Message &aMessage)
+{
+    OT_UNUSED_VARIABLE(aMessage);
+
+    return true;
 }
 
 #if OPENTHREAD_FTD
@@ -533,13 +542,6 @@ void IndirectSender::ClearMessagesForRemovedChildren(void)
     }
 }
 
-bool IndirectSender::AcceptAnyMessage(const Message &aMessage)
-{
-    OT_UNUSED_VARIABLE(aMessage);
-
-    return true;
-}
-
 bool IndirectSender::AcceptSupervisionMessage(const Message &aMessage)
 {
     return aMessage.GetType() == Message::kTypeSupervision;
@@ -547,23 +549,435 @@ bool IndirectSender::AcceptSupervisionMessage(const Message &aMessage)
 
 #endif // OPENTHREAD_FTD
 
+// GAMA
 #if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+#if OPENTHREAD_FTD
+void IndirectSender::AddMessageForSleepyRouter(Message &aMessage, Router &aRouter)
+{
+    // TODO: check the Router is, in-fact, sleepy
+    OT_ASSERT(aRouter.IsCslSynchronized());
+
+    aMessage.SetPendingForRouter(aRouter.GetRouterId());
+    aRouter.IncrementIndirectMessageCount();
+    RequestMessageUpdate(aRouter);
+}
+
+Error IndirectSender::RemoveMessageFromSleepyRouter(Message &aMessage, Router &aRouter)
+{
+    Error error = kErrorNone;
+    // TODO: verify that the Router in the message is the one im operating for (i guess?)
+    VerifyOrExit(aMessage.IsPendingForRouter(aRouter.GetRouterId()));
+
+    // clear the pending for Router field
+    aMessage.ClearPendingForRouter();
+    aRouter.DecrementIndirectMessageCount();
+
+    RequestMessageUpdate(aRouter);
+exit:
+    return error;
+}
+
+void IndirectSender::HandleSentFrameToCslRouter(const Mac::TxFrame &aFrame,
+                                                const FrameContext &aContext,
+                                                Error               aError,
+                                                Router             &aRouter)
+{
+    Message *message    = aRouter.GetIndirectMessage();
+    uint16_t nextOffset = aContext.mMessageNextOffset;
+
+    VerifyOrExit(mEnabled);
+
+    VerifyOrExit(nextOffset != 0);
+
+    switch (aError)
+    {
+    case kErrorNone:
+        break;
+
+    case kErrorNoAck:
+    case kErrorChannelAccessFailure:
+    case kErrorAbort:
+
+        aRouter.SetIndirectTxSuccess(false);
+
+#if OPENTHREAD_CONFIG_DROP_MESSAGE_ON_FRAGMENT_TX_FAILURE
+        if (message != nullptr)
+        {
+            nextOffset = message->GetLength();
+        }
+#endif
+        break;
+
+    default:
+        OT_ASSERT(false);
+    }
+
+    if ((message != nullptr) && (nextOffset < message->GetLength()))
+    {
+        aRouter.SetIndirectFragmentOffset(nextOffset);
+        mCslTxScheduler.Update();
+        ExitNow();
+    }
+
+    if (message != nullptr)
+    {
+        Error        txError = aError;
+        Mac::Address macDest;
+
+        aRouter.SetIndirectMessage(nullptr);
+        aRouter.GetLinkInfo().AddMessageTxStatus(aRouter.GetIndirectTxSuccess());
+
+#if !OPENTHREAD_CONFIG_DROP_MESSAGE_ON_FRAGMENT_TX_FAILURE
+
+        if (!aRouter.GetIndirectTxSuccess() && (txError == kErrorNone))
+        {
+            txError = kErrorFailed;
+        }
+#endif
+
+        if (!aFrame.IsEmpty())
+        {
+            IgnoreError(aFrame.GetDstAddr(macDest));
+            Get<MeshForwarder>().LogMessage(MeshForwarder::kMessageTransmit, *message, txError, &macDest);
+        }
+        // same, not sure because we are accessing the MeshForwarder mCounters
+        Get<MeshForwarder>().mCounters.UpdateOnTxDone(*message, aRouter.GetIndirectTxSuccess());
+
+        if (message->IsPendingForRouter(aRouter.GetRouterId()))
+        {
+            message->ClearPendingForRouter();
+            aRouter.DecrementIndirectMessageCount();
+        }
+
+        message->InvokeTxCallback(txError);
+
+#if OPENTHREAD_CONFIG_HISTORY_TRACKER_ENABLE
+        if (aFrame.IsEmpty())
+        {
+            aRouter.GetMacAddress(macDest);
+        }
+
+        Get<HistoryTracker::Local>().RecordTxMessage(*message, macDest, txError == kErrorNone);
+#endif
+        Get<MeshForwarder>().RemoveMessageIfNoPendingTx(*message);
+    }
+
+    UpdateIndirectMessage(aRouter);
+
+exit:
+    return;
+}
+
+void IndirectSender::UpdateIndirectMessage(Router &aRouter)
+{
+    Message *message = FindQueuedMessageForSleepyRouter(aRouter, AcceptAnyMessage);
+
+    aRouter.SetWaitingForMessageUpdate(false);
+    aRouter.SetIndirectMessage(message);
+    aRouter.SetIndirectFragmentOffset(0);
+    aRouter.SetIndirectTxSuccess(true);
+
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+    mCslTxScheduler.Update();
+#endif
+
+    if (message != nullptr)
+    {
+        Mac::Address routerAddress;
+
+        aRouter.GetMacAddress(routerAddress);
+        Get<MeshForwarder>().LogMessage(MeshForwarder::kMessagePrepareIndirect, *message, kErrorNone, &routerAddress);
+    }
+}
+
+Message *IndirectSender::FindQueuedMessageForSleepyRouter(Router &aRouter, MessageChecker aChecker)
+{
+    Message *match = nullptr;
+
+    for (Message &message : Get<MeshForwarder>().mSendQueue)
+    {
+        if (message.IsPendingForRouter(aRouter.GetRouterId()) && aChecker(message))
+        {
+            match = &message;
+            break;
+        }
+    }
+
+    return match;
+}
+
+void IndirectSender::RequestMessageUpdate(Router &aRouter)
+{
+    Message *curMessage = aRouter.GetIndirectMessage();
+    Message *newMessage;
+
+    VerifyOrExit(!aRouter.IsWaitingForMessageUpdate());
+
+    newMessage = FindQueuedMessageForSleepyRouter(aRouter, AcceptAnyMessage);
+
+    VerifyOrExit(curMessage != newMessage);
+
+    VerifyOrExit(aRouter.GetIndirectFragmentOffset() == 0);
+
+    UpdateIndirectMessage(aRouter);
+
+exit:
+    return;
+}
+
+// GAMA: mirrors `ClearAllMessagesForSleepyChild()` above. Called from `Mle::RemoveNeighbor()` when a
+// Router-peer is removed (link timeout, role change, etc.) so any message still queued indirectly for
+// it (`Message::IsPendingForRouter()`) is released instead of leaking forever in `mSendQueue` -- see the
+// "purge scenario" analysis in docs/sleepy-router/DESIGN_LOG.md, section 6.
+void IndirectSender::ClearAllMessagesForSleepyRouter(Router &aRouter)
+{
+    VerifyOrExit(aRouter.GetIndirectMessageCount() > 0);
+
+    for (Message &message : Get<MeshForwarder>().mSendQueue)
+    {
+        if (message.IsPendingForRouter(aRouter.GetRouterId()))
+        {
+            message.ClearPendingForRouter();
+        }
+
+        Get<MeshForwarder>().RemoveMessageIfNoPendingTx(message);
+    }
+
+    aRouter.SetIndirectMessage(nullptr);
+    aRouter.ResetIndirectMessageCount();
+
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+    mCslTxScheduler.Update();
+#endif
+
+exit:
+    return;
+}
+
+#endif // OPENTHREAD_FTD
+
+Error IndirectSender::RemoveMessageFromSleepyParent(Message &aMessage)
+{
+    Error error = kErrorNone;
+    // get the pointer to the parent
+    Parent &parent = Get<Mle::Mle>().GetParent();
+    VerifyOrExit(aMessage.IsPendingForParent(), error = kErrorNotFound);
+    // mark the message to be removed
+    aMessage.ClearPendingForParent();
+    RequestMessageUpdate(parent);
+
+exit:
+    return error;
+}
+
+// GAMA
+void IndirectSender::AddMessageForSleepyParent(Message &aMessage, Parent &aParent)
+{
+    OT_ASSERT(aParent.IsCslSynchronized());
+
+    aMessage.SetPendingForParent();
+    RequestMessageUpdate(aParent);
+}
+
+// GAMA
+Message *IndirectSender::FindQueuedMessageForSleepyParent(Parent &aParent, MessageChecker aChecker)
+{
+    OT_UNUSED_VARIABLE(aParent);
+    Message *match = nullptr;
+
+    for (Message &message : Get<MeshForwarder>().mSendQueue)
+    {
+        if (message.IsPendingForParent() && aChecker(message))
+        {
+            match = &message;
+            break;
+        }
+    }
+
+    return match;
+}
+
+// GAMA
+void IndirectSender::UpdateIndirectMessage(Parent &aParent)
+{
+    Message *message = FindQueuedMessageForSleepyParent(aParent, AcceptAnyMessage);
+
+    aParent.SetWaitingForMessageUpdate(false);
+    aParent.SetIndirectMessage(message);
+    aParent.SetIndirectFragmentOffset(0);
+    aParent.SetIndirectTxSuccess(true);
+    mCslTxScheduler.Update();
+}
+
+// GAMA
+void IndirectSender::RequestMessageUpdate(Parent &aParent)
+{
+    Message *curMessage = aParent.GetIndirectMessage();
+    Message *newMessage;
+
+    VerifyOrExit(!aParent.IsWaitingForMessageUpdate());
+
+    newMessage = FindQueuedMessageForSleepyParent(aParent, AcceptAnyMessage);
+
+    VerifyOrExit(curMessage != newMessage);
+    VerifyOrExit(aParent.GetIndirectFragmentOffset() == 0);
+
+    UpdateIndirectMessage(aParent);
+
+exit:
+    return;
+}
+
+// GAMA
+void IndirectSender::HandleSentFrameToCslParent(const Mac::TxFrame &aFrame,
+                                                const FrameContext &aContext,
+                                                Error               aError,
+                                                Parent             &aParent)
+{
+    Message *message    = aParent.GetIndirectMessage();
+    uint16_t nextOffset = aContext.mMessageNextOffset;
+
+    VerifyOrExit(mEnabled);
+
+    VerifyOrExit(nextOffset != 0);
+
+    switch (aError)
+    {
+    case kErrorNone:
+        break;
+
+    case kErrorNoAck:
+    case kErrorChannelAccessFailure:
+    case kErrorAbort:
+
+        aParent.SetIndirectTxSuccess(false);
+
+#if OPENTHREAD_CONFIG_DROP_MESSAGE_ON_FRAGMENT_TX_FAILURE
+        if (message != nullptr)
+        {
+            nextOffset = message->GetLength();
+        }
+#endif
+        break;
+
+    default:
+        OT_ASSERT(false);
+    }
+
+    if ((message != nullptr) && (nextOffset < message->GetLength()))
+    {
+        aParent.SetIndirectFragmentOffset(nextOffset);
+        mCslTxScheduler.Update();
+        ExitNow();
+    }
+
+    if (message != nullptr)
+    {
+        Error        txError = aError;
+        Mac::Address macDest;
+
+        aParent.SetIndirectMessage(nullptr);
+        aParent.GetLinkInfo().AddMessageTxStatus(aParent.GetIndirectTxSuccess());
+
+#if !OPENTHREAD_CONFIG_DROP_MESSAGE_ON_FRAGMENT_TX_FAILURE
+
+        if (!aParent.GetIndirectTxSuccess() && (txError == kErrorNone))
+        {
+            txError = kErrorFailed;
+        }
+#endif
+
+        if (!aFrame.IsEmpty())
+        {
+            IgnoreError(aFrame.GetDstAddr(macDest));
+            Get<MeshForwarder>().LogMessage(MeshForwarder::kMessageTransmit, *message, txError, &macDest);
+        }
+        // same, not sure because we are accessing the MeshForwarder mCounters
+        Get<MeshForwarder>().mCounters.UpdateOnTxDone(*message, aParent.GetIndirectTxSuccess());
+
+        if (message->IsPendingForParent())
+        {
+            message->ClearPendingForParent();
+        }
+
+        message->InvokeTxCallback(txError);
+
+#if OPENTHREAD_CONFIG_HISTORY_TRACKER_ENABLE
+        if (aFrame.IsEmpty())
+        {
+            aParent.GetMacAddress(macDest);
+        }
+
+        Get<HistoryTracker::Local>().RecordTxMessage(*message, macDest, txError == kErrorNone);
+#endif
+        Get<MeshForwarder>().RemoveMessageIfNoPendingTx(*message);
+    }
+
+    UpdateIndirectMessage(aParent);
+
+exit:
+    return;
+}
 
 Error IndirectSender::PrepareFrameForCslNeighbor(Mac::TxFrame &aFrame,
                                                  FrameContext &aContext,
                                                  CslNeighbor  &aCslNeighbor)
 {
-    Error error = kErrorNotFound;
+    Error          error = kErrorNone;
+    Message       *message;
+    Ip6::Header    ip6Header;
+    Mac::Addresses macAddrs;
+    uint16_t       directTxOffset;
 
-#if OPENTHREAD_FTD
-    // `CslNeighbor` can only be a `Child` for now, but can be changed later.
-    error = PrepareFrameForChild(aFrame, aContext, static_cast<Child &>(aCslNeighbor));
-#else
-    OT_UNUSED_VARIABLE(aFrame);
-    OT_UNUSED_VARIABLE(aContext);
-    OT_UNUSED_VARIABLE(aCslNeighbor);
-#endif
+    // both Child and Router can now be CslNeighbors
+    // i should probably if-else the Child - Router case (?)
+    VerifyOrExit(mEnabled, error = kErrorAbort);
 
+    aCslNeighbor.GetMacAddress(macAddrs.mDestination);
+
+    message = aCslNeighbor.GetIndirectMessage();
+
+    if ((message == nullptr) || (message->GetType() == Message::kTypeSupervision))
+    {
+        Get<MessageFramer>().PrepareEmptyFrame(aFrame, macAddrs.mDestination, /* aAckRequest */ true);
+        aContext.mMessageNextOffset = (message == nullptr) ? 0 : message->GetLength();
+
+        ExitNow();
+    }
+
+    VerifyOrExit(message->GetType() == Message::kTypeIp6);
+
+    // Determine the MAC source and destination addresses.
+
+    IgnoreError(message->Read(0, ip6Header));
+
+    Get<MessageFramer>().DetermineMacSourceAddress(ip6Header.GetSource(), macAddrs);
+
+    if (ip6Header.GetDestination().IsLinkLocalUnicast())
+    {
+        macAddrs.mDestination.SetExtendedFromIid(ip6Header.GetDestination().GetIid());
+    }
+
+    // Prepare the data frame from previous child's indirect offset.
+
+    directTxOffset = message->GetOffset();
+    message->SetOffset(aCslNeighbor.GetIndirectFragmentOffset());
+
+    aContext.mMessageNextOffset = Get<MessageFramer>().PrepareFrame(aFrame, *message, macAddrs);
+
+    message->SetOffset(directTxOffset);
+
+    // Set `FramePending` if there are more queued messages (excluding
+    // the current one being sent out) for the child (note `> 1` check).
+    // The case where the current message itself requires fragmentation
+    // is already checked and handled in the above `PrepareFrame` call.
+
+    if (aCslNeighbor.GetIndirectMessageCount() > 1)
+    {
+        aFrame.SetFramePending(true);
+    }
+
+exit:
     return error;
 }
 
@@ -572,13 +986,26 @@ void IndirectSender::HandleSentFrameToCslNeighbor(const Mac::TxFrame &aFrame,
                                                   Error               aError,
                                                   CslNeighbor        &aCslNeighbor)
 {
+    // non castare ciecamente a child, controlla se c'è nella table
 #if OPENTHREAD_FTD
-    HandleSentFrameToChild(aFrame, aContext, aError, static_cast<Child &>(aCslNeighbor));
+    // se sto instradando verso un child okay
+    if (Get<ChildTable>().Contains(aCslNeighbor))
+    {
+        HandleSentFrameToChild(aFrame, aContext, aError, static_cast<Child &>(aCslNeighbor));
+    }
+    else if (Get<RouterTable>().Contains(aCslNeighbor))
+    {
+        // instrado verso un router
+        HandleSentFrameToCslRouter(aFrame, aContext, aError, static_cast<Router &>(aCslNeighbor));
+    }
+    else
+    {
+        // devo instradare verso il mio Parent
+        HandleSentFrameToCslParent(aFrame, aContext, aError, static_cast<Parent &>(aCslNeighbor));
+    }
 #else
-    OT_UNUSED_VARIABLE(aFrame);
-    OT_UNUSED_VARIABLE(aContext);
-    OT_UNUSED_VARIABLE(aError);
-    OT_UNUSED_VARIABLE(aCslNeighbor);
+    // im a child so i should handle the sent frame for my Parent
+    HandleSentFrameToCslParent(aFrame, aContext, aError, static_cast<Parent &>(aCslNeighbor));
 #endif
 }
 

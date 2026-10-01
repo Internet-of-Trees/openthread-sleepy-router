@@ -149,6 +149,10 @@ public:
      */
     explicit Mle(Instance &aInstance);
 
+    // GAMA
+    void SetSleepyRouterMode(bool aEnable);
+
+    bool IsSleepyRouterMode(void) const { return mIsSleepyRouter; }
     /**
      * Enables MLE.
      *
@@ -2529,10 +2533,12 @@ private:
 
     static const otMeshLocalPrefix kMeshLocalPrefixInit;
 
-    bool       mRetrieveNewNetworkData : 1;
-    bool       mRequestRouteTlv : 1;
-    bool       mHasRestored : 1;
-    bool       mInitiallyAttachedAsSleepy : 1;
+    bool mRetrieveNewNetworkData : 1;
+    bool mRequestRouteTlv : 1;
+    bool mHasRestored : 1;
+    bool mInitiallyAttachedAsSleepy : 1;
+    // GAMA
+    bool       mIsSleepyRouter;
     DeviceRole mRole;
     DeviceRole mLastSavedRole;
     DeviceMode mDeviceMode;

@@ -70,7 +70,7 @@
  * The default child timeout value (in seconds).
  */
 #ifndef OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT
-#define OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT 240
+#define OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT 20
 #endif
 
 /**

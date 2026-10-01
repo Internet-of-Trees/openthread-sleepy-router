@@ -206,7 +206,8 @@ protected:
 #endif
         bool mDirectTx : 1;            // Whether a direct transmission is required.
         bool mLinkSecurity : 1;        // Whether link security is enabled.
-        bool mInPriorityQ : 1;         // Whether the message is queued in normal or priority queue.
+        bool mInPriorityQ : 1;         // Whether the message is queued in normal or priority queue
+        bool mPendingForParent : 1;    // Wheter the message if for a csl-sync parent
         bool mTxSuccess : 1;           // Whether the direct tx of the message was successful.
         bool mDoNotEvict : 1;          // Whether this message may be evicted.
         bool mMulticastLoop : 1;       // Whether this multicast message may be looped back.
@@ -232,6 +233,7 @@ protected:
 #if OPENTHREAD_CONFIG_TIME_SYNC_ENABLE
         uint8_t mTimeSyncSeq; // The time sync sequence.
 #endif
+        uint8_t mPendingRouterId : 6; // the bit used to represent the ID of the pending Sleepy Router
         uint16_t mLength;      // Current message length (number of bytes).
         uint16_t mOffset;      // A byte offset within the message.
         uint16_t mReserved;    // Number of reserved bytes (for header).
@@ -1306,6 +1308,17 @@ public:
      * @retval FALSE  If message forwarding is not scheduled for direct transmission.
      */
     bool IsDirectTransmission(void) const { return GetMetadata().mDirectTx; }
+
+    // GAMA checkers for pendingParent bit
+    bool IsPendingForParent(void) const { return GetMetadata().mPendingForParent; }
+    void SetPendingForParent(void) { GetMetadata().mPendingForParent = true; }
+    void ClearPendingForParent(void) { GetMetadata().mPendingForParent = false; }
+
+    // GAMA checkers for sleepyRouter csl functionality
+    bool IsPendingForRouter(uint8_t aRouterId) const { return GetMetadata().mPendingRouterId == aRouterId + 1; }
+    bool IsPendingForAnyRouter(void) const { return GetMetadata().mPendingRouterId != 0; }
+    void SetPendingForRouter(uint8_t aRouterId) { GetMetadata().mPendingRouterId = aRouterId + 1; }
+    void ClearPendingForRouter(void) { GetMetadata().mPendingRouterId = 0; }
 
     /**
      * Unschedules forwarding using direct transmission.

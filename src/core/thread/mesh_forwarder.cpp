@@ -94,7 +94,7 @@ void MeshForwarder::Start(void)
     if (!mEnabled)
     {
         Get<Mac::Mac>().SetRxOnWhenIdle(true);
-#if OPENTHREAD_FTD
+#if OPENTHREAD_FTD || OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
         mIndirectSender.Start();
 #endif
 
@@ -463,6 +463,10 @@ void MeshForwarder::ScheduleTransmissionTask(void)
         mSendMessage->SetTxSuccess(true);
     }
 
+    // NOTE: a message destined to a CSL-synchronized (sleepy) parent is NOT diverted into a
+    // separate queue here. It stays on the normal direct-tx path; `HandleFrameRequest()` below
+    // attaches a CSL `TxDelay` to the frame once built, so `Mac`/`SubMac` hold transmission until
+    // the parent's next listen window instead of sending immediately. See `HandleFrameRequest()`.
     Get<Mac::Mac>().RequestDirectFrameTransmission();
 
 exit:
@@ -732,6 +736,37 @@ Mac::TxFrame *MeshForwarder::HandleFrameRequest(Mac::TxFrames &aTxFrames)
 
     frame->SetIsARetransmission(false);
 
+#if 0
+    // If this direct frame is destined to our own CSL-synchronized (sleepy) parent, delay the
+    // actual over-the-air transmission until the parent's next CSL listen window instead of
+    // sending it right away (the parent is asleep most of the time and would not hear it).
+    if (Get<Mle::Mle>().GetRole() == Mle::kRoleChild)
+    {
+        Parent &parent = Get<Mle::Mle>().GetParent();
+        bool    isDest =
+            ((mMacAddrs.mDestination.IsExtended() && mMacAddrs.mDestination.GetExtended() == parent.GetExtAddress()) ||
+             (mMacAddrs.mDestination.IsShort() && mMacAddrs.mDestination.GetShort() == parent.GetRloc16()));
+
+        if ((parent.GetState() == Neighbor::kStateValid) && parent.IsCslSynchronized() && (parent.GetCslPeriod() > 0) &&
+            isDest)
+        {
+            uint64_t radioNow      = Get<Radio>().GetNow();
+            uint32_t periodInUs    = static_cast<uint32_t>(parent.GetCslPeriod()) * kUsPerTenSymbols;
+            uint64_t firstTxWindow = parent.GetLastRxTimestamp() + parent.GetCslPhase() * kUsPerTenSymbols;
+            uint64_t nextTxWindow  = radioNow - (radioNow % periodInUs) + (firstTxWindow % periodInUs);
+
+            while (nextTxWindow < radioNow)
+            {
+                nextTxWindow += periodInUs;
+            }
+
+            frame->SetTxDelay(static_cast<uint32_t>(nextTxWindow - parent.GetLastRxTimestamp()));
+            frame->SetTxDelayBaseTime(static_cast<uint32_t>(parent.GetLastRxTimestamp()));
+            frame->SetCsmaCaEnabled(true);
+        }
+    }
+#endif
+
 exit:
     return frame;
 }
@@ -966,18 +1001,34 @@ void MeshForwarder::FinalizeAndRemoveMessage(Message &aMessage, Error aError, Me
     FinalizeMessageIndirectTxs(aMessage);
 #endif
 
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+    FinalizeMessageIndirectTxsToParent(aMessage);
+#endif
+
     FinalizeMessageDirectTx(aMessage, aError);
     RemoveMessageIfNoPendingTx(aMessage);
 }
+// GAMA
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+void MeshForwarder::FinalizeMessageIndirectTxsToParent(Message &aMessage)
+{
+    VerifyOrExit(aMessage.IsPendingForParent());
+    IgnoreError(mIndirectSender.RemoveMessageFromSleepyParent(aMessage));
 
+exit:
+    return;
+}
+
+#endif
 bool MeshForwarder::RemoveMessageIfNoPendingTx(Message &aMessage)
 {
     bool didRemove = false;
 
 #if OPENTHREAD_FTD
-    VerifyOrExit(!aMessage.IsDirectTransmission() && aMessage.GetIndirectTxChildMask().IsEmpty());
+    VerifyOrExit(!aMessage.IsDirectTransmission() && aMessage.GetIndirectTxChildMask().IsEmpty() &&
+                 !aMessage.IsPendingForParent() && !aMessage.IsPendingForAnyRouter());
 #else
-    VerifyOrExit(!aMessage.IsDirectTransmission());
+    VerifyOrExit(!aMessage.IsDirectTransmission() && !aMessage.IsPendingForParent());
 #endif
 
     if (mSendMessage == &aMessage)

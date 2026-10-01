@@ -53,6 +53,7 @@ Mle::Mle(Instance &aInstance)
     , mRequestRouteTlv(false)
     , mHasRestored(false)
     , mInitiallyAttachedAsSleepy(false)
+    , mIsSleepyRouter(false)
     , mRole(kRoleDisabled)
     , mLastSavedRole(kRoleDisabled)
     , mDeviceMode(DeviceMode::kModeRxOnWhenIdle)
@@ -337,7 +338,7 @@ void Mle::SetRole(DeviceRole aRole)
     }
 
 #if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
-    Get<Mac::Mac>().SetCslCapable(IsCslSupported() && !IsRxOnWhenIdle());
+    Get<Mac::Mac>().SetCslCapable(IsCslSupported() && (!IsRxOnWhenIdle() || IsSleepyRouterMode()));
 #endif
 
 exit:
@@ -677,6 +678,31 @@ exit:
     return;
 }
 
+// GAMA
+void Mle::SetSleepyRouterMode(bool aEnable)
+{
+    VerifyOrExit(mIsSleepyRouter != aEnable);
+    mIsSleepyRouter = aEnable;
+#if OPENTHREAD_FTD
+    // Only actually enable/disable the Sleepy Router CSL-IE advertising and per-parent tx
+    // scheduling paths (see `Mac::BeginTransmit()`, `MessageFramer::PrepareMacHeaders()`,
+    // `MeshForwarder::HandleFrameRequest()`) once this mode is explicitly turned on,
+    // instead of unconditionally at every FTD device's boot.
+    Get<Mac::Mac>().SetSleepyRouterCslPeriod(aEnable ? Mac::Mac::kDefaultSleepyRouterCslPeriod : 0);
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
+    // `Mle::SetRole()` only recomputes `Mac::mIsCslCapable` on an actual role transition, which does not
+    // happen just by toggling sleepy router mode on an already-Router device — so this needs to be driven
+    // here directly, both the capability gate and the receiver-side period (`Mac::mCslPeriod`, distinct from
+    // `mSleepyRouterPeriod` above, which only patches the outgoing CSL IE and does not drive our own radio).
+    Get<Mac::Mac>().SetCslCapable(IsCslSupported() && (!IsRxOnWhenIdle() || IsSleepyRouterMode()));
+    Get<Mac::Mac>().SetCslPeriod(aEnable ? Mac::Mac::kDefaultSleepyRouterCslPeriod : 0);
+#endif
+#endif
+
+exit:
+    return;
+}
+
 Error Mle::SetDeviceMode(DeviceMode aDeviceMode)
 {
     Error      error   = kErrorNone;
@@ -686,7 +712,14 @@ Error Mle::SetDeviceMode(DeviceMode aDeviceMode)
     VerifyOrExit(!aDeviceMode.IsFullThreadDevice(), error = kErrorInvalidArgs);
 #endif
 
+#if OPENTHREAD_FTD
+    if (!IsSleepyRouterMode())
+    {
+        VerifyOrExit(aDeviceMode.IsValid(), error = kErrorInvalidArgs);
+    }
+#else
     VerifyOrExit(aDeviceMode.IsValid(), error = kErrorInvalidArgs);
+#endif
     VerifyOrExit(mDeviceMode != aDeviceMode);
     mDeviceMode = aDeviceMode;
 
@@ -727,8 +760,9 @@ Error Mle::SetDeviceMode(DeviceMode aDeviceMode)
         // Request" to update the parent). But if we initially attached
         // as rx-on, we require a re-attach on switching from rx-on to
         // sleepy (rx-off) mode.
-
-        if (!mInitiallyAttachedAsSleepy && oldMode.IsRxOnWhenIdle() && !mDeviceMode.IsRxOnWhenIdle())
+        // GAMA
+        if (!mInitiallyAttachedAsSleepy && oldMode.IsRxOnWhenIdle() && !mDeviceMode.IsRxOnWhenIdle() &&
+            !mIsSleepyRouter)
         {
             shouldReattach = true;
         }
@@ -964,7 +998,10 @@ exit:
     return;
 }
 
-bool Mle::IsCslSupported(void) const { return IsChild() && GetParent().IsThreadVersion1p2OrHigher(); }
+bool Mle::IsCslSupported(void) const
+{
+    return (IsChild() && GetParent().IsThreadVersion1p2OrHigher()) || IsSleepyRouterMode();
+}
 #endif
 
 void Mle::InitNeighbor(Neighbor &aNeighbor, const RxInfo &aRxInfo)
@@ -5738,11 +5775,12 @@ void Mle::RetxTracker::RetryInfo::Schedule(TimerMilli &aTimer) const
 Error Mle::RetxTracker::RetryInfo::DetachIfMaxAttemptsReached(Mle &aMle) const
 {
     Error error = kErrorNone;
-
+    OT_UNUSED_VARIABLE(aMle);
     if (mAttempts >= kMaxAttempts)
     {
-        IgnoreError(aMle.BecomeDetached());
-        error = kErrorDetached;
+        // IgnoreError(aMle.BecomeDetached());
+        // error = kErrorDetached;
+        otLogInfoPlat("HACK: Max attempts reached,detach blocked");
     }
 
     return error;

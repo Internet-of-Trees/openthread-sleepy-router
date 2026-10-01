@@ -417,6 +417,33 @@ otLinkModeConfig otThreadGetLinkMode(otInstance *aInstance);
 otError otThreadSetLinkMode(otInstance *aInstance, otLinkModeConfig aConfig);
 
 /**
+ * Set the Sleepy Router mode.
+ *
+ * This function is used to enable or disable Sleepy Router mode. When enabled, the device will operate as a Sleepy
+ * Router, which means it will periodically sleep to conserve power while still maintaining its role as a router in the
+ * Thread network.
+ * @param[in]   aInstance   A pointer to an OpenThread instance.
+ *
+ * @param[in]   aEnable     TRUE to enable Sleepy Router mode, FALSE to disable.
+ * @sa otThreadSetSleepyRouterMode
+ */
+void otThreadSetSleepyRouterMode(otInstance *aInstance, bool aEnable);
+
+/**
+ * Get the Sleepy Router mode.
+ *
+ * This function is used to check if Sleepy Router mode is enabled or disabled. When enabled, the device will operate
+ * as a Sleepy Router, which means it will periodically sleep to conserve power while still maintaining its role as a
+ * router in the Thread network.
+ *
+ * @param[in]   aInstance   A pointer to an OpenThread instance.
+ *
+ * @returns TRUE if Sleepy Router mode is enabled, FALSE otherwise.
+ * @sa otThreadSetSleepyRouterMode
+ */
+bool otThreadIsSleepyRouterMode(otInstance *aInstance);
+
+/**
  * Get the Thread Network Key.
  *
  * @param[in]   aInstance     A pointer to an OpenThread instance.

@@ -58,8 +58,9 @@ namespace ot {
  */
 
 #if OPENTHREAD_FTD || OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
-
+class Parent;
 class CslNeighbor;
+class Router;
 #if OPENTHREAD_FTD
 class Child;
 #endif
@@ -166,6 +167,8 @@ public:
      */
     void Stop(void);
 
+    static bool AcceptAnyMessage(const Message &aMessage);
+
 #if OPENTHREAD_FTD
     /**
      * Adds a message for indirect transmission to a sleepy child.
@@ -257,14 +260,52 @@ public:
 
 #endif // OPENTHREAD_FTD
 
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+
+    // methods for SleepyRouter and Parent queueing
+    void  AddMessageForSleepyParent(Message &aMessage, Parent &aParent);
+    Error RemoveMessageFromSleepyParent(Message &aMessage);
+#if OPENTHREAD_FTD
+    void  AddMessageForSleepyRouter(Message &aMessage, Router &aRouter);
+    Error RemoveMessageFromSleepyRouter(Message &aMessage, Router &aRouter);
+
+    /**
+     * Removes all added messages for a specific Router-peer and frees them (with no indirect/direct tx).
+     *
+     * @param[in]  aRouter  A reference to a Router whose messages shall be removed.
+     */
+    void ClearAllMessagesForSleepyRouter(Router &aRouter);
+#endif // OPENTHREAD_FTD
+#endif // OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+
 private:
 #if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
     // Callbacks from `CslTxScheduler`
+    // GAMA merged child-parent
     Error PrepareFrameForCslNeighbor(Mac::TxFrame &aFrame, FrameContext &aContext, CslNeighbor &aCslNeighbor);
     void  HandleSentFrameToCslNeighbor(const Mac::TxFrame &aFrame,
                                        const FrameContext &aContext,
                                        Error               aError,
                                        CslNeighbor        &aCslNeighbor);
+
+    void     HandleSentFrameToCslParent(const Mac::TxFrame &aFrame,
+                                        const FrameContext &aContext,
+                                        Error               aError,
+                                        Parent             &aParent);
+    void     HandleSentFrameToCslRouter(const Mac::TxFrame &aFrame,
+                                        const FrameContext &aContext,
+                                        Error               aError,
+                                        Router             &aRouter);
+    Message *FindQueuedMessageForSleepyParent(Parent &aParent, MessageChecker aChecker);
+
+    // methods for SleepyRouter Indirect Sending
+#if OPENTHREAD_FTD
+    Message *FindQueuedMessageForSleepyRouter(Router &aRouter, MessageChecker aChecker);
+    void     UpdateIndirectMessage(Router &aRouter);
+    void     RequestMessageUpdate(Router &aRouter);
+#endif
+    void UpdateIndirectMessage(Parent &aParent);
+    void RequestMessageUpdate(Parent &aParent);
 #endif
 
 #if OPENTHREAD_FTD
@@ -273,11 +314,9 @@ private:
     void  HandleSentFrameToChild(const Mac::TxFrame &aFrame, const FrameContext &aContext, Error aError, Child &aChild);
     void  HandleFrameChangeDone(Child &aChild);
 
-    void UpdateIndirectMessage(Child &aChild);
-    void RequestMessageUpdate(Child &aChild);
-    void ClearMessagesForRemovedChildren(void);
-
-    static bool AcceptAnyMessage(const Message &aMessage);
+    void        UpdateIndirectMessage(Child &aChild);
+    void        RequestMessageUpdate(Child &aChild);
+    void        ClearMessagesForRemovedChildren(void);
     static bool AcceptSupervisionMessage(const Message &aMessage);
 #endif // OPENTHREAD_FTD
 

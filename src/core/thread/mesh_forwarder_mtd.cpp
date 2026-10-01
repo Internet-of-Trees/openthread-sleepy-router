@@ -32,7 +32,7 @@
  */
 
 #include "mesh_forwarder.hpp"
-
+#include "instance/instance.hpp"
 #if OPENTHREAD_MTD
 
 namespace ot {
@@ -41,17 +41,45 @@ void MeshForwarder::SendMessage(OwnedPtr<Message> aMessagePtr)
 {
     Message &message = *aMessagePtr.Release();
 
-    message.SetDirectTransmission();
     message.SetOffset(0);
     message.SetDatagramTag(0);
     message.SetTimestampToNow();
 
     mSendQueue.Enqueue(message);
-    mScheduleTransmissionTask.Post();
+#if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+    if (Get<Mle::Mle>().GetRole() == Mle::kRoleChild)
+    {
+        Parent &parent = Get<Mle::Mle>().GetParent();
+        if ((parent.GetState() == Neighbor::kStateValid) && parent.IsCslSynchronized() && parent.GetCslPeriod() > 0)
+        {
+            mIndirectSender.AddMessageForSleepyParent(message, parent);
+        }
+        else
+        {
+            message.SetDirectTransmission();
+        }
+    }
+    else
+    {
+        message.SetDirectTransmission();
+    }
+#else
+    message.SetDirectTransmission();
+#endif
+
+    if (RemoveMessageIfNoPendingTx(message))
+    {
+        ExitNow();
+    }
 
 #if (OPENTHREAD_CONFIG_MAX_FRAMES_IN_DIRECT_TX_QUEUE > 0)
     ApplyDirectTxQueueLimit(message);
 #endif
+
+    mScheduleTransmissionTask.Post();
+
+exit:
+    return;
 }
 
 Error MeshForwarder::EvictMessage(Message::Priority aPriority, EvictReason aEvictReason)

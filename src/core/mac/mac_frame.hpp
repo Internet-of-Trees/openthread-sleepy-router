@@ -679,7 +679,7 @@ public:
      */
     const uint8_t *GetThreadIe(uint8_t aSubType) const;
 
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_FTD
     /**
      * Finds CSL IE in the frame and modify its content.
      *
@@ -697,7 +697,7 @@ public:
     bool HasCslIe(void) const;
 #endif // OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
 
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE || OPENTHREAD_FTD
     /**
      * Returns a pointer to a CSL IE.
      *
@@ -1107,7 +1107,7 @@ public:
 #if OPENTHREAD_CONFIG_TIME_SYNC_ENABLE
         bool mAppendTimeIe : 1; ///< Whether to append Time IE.
 #endif
-#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE
+#if OPENTHREAD_CONFIG_MAC_CSL_RECEIVER_ENABLE || OPENTHREAD_FTD
         bool mAppendCslIe : 1; ///< Whether to append CSL IE.
 #endif
         bool mEmptyPayload : 1; ///< Whether payload is empty (to decide about appending Termination2 IE).
