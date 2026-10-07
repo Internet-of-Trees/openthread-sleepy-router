@@ -27,7 +27,7 @@ Due traguardi, in sequenza:
 
 ---
 
-## 3. Stato attuale (aggiornato 2026-10-06)
+## 3. Stato attuale (aggiornato 2026-10-07)
 
 ### Fatto
 - [x] Router (FTD) può entrare in modalità Sleepy Router (`sleepyrouter enable/disable`, `Mle::SetSleepyRouterMode`)
@@ -87,9 +87,20 @@ Primo passo concreto sulla domanda "lo Sleepy Router convive con reti a molti no
 - **Test Nexus `desync` e `purge` corretti.** `SetNodeEnabled(false)` non silenzia la radio Nexus (manda comunque l'ACK), ora entrambi usano `Node::SetPosition(2000, 0)` (RSSI sotto -100 dBm oltre ~1000 unità). `purge` è stato verificato in entrambe le direzioni: senza il fix del bug #12 **fallisce** (resta 1 messaggio in coda), con il fix passa — prima passava anche senza il fix e non proteggeva nulla. `desync` passa.
 - **Verifica finale:** `script/check-simulation-build` completo → `EXIT=0`, 21 configurazioni, zero errori (su una copia dei soli sorgenti: lo script va lanciato da una directory di build vuota e fallisce se la radice del repo ha già un `CMakeCache.txt` in-source). Suite Nexus Sleepy Router tutta verde.
 
+### Risolto in questa tappa (continua, 6) — 2026-10-07, catena di 6
+- **Commit del lavoro del 6 ottobre** sul branch `sleepy-router`, che traccia `enterprise` = `Internet-of-Trees/openthread-sleepy-router` (non l'upstream: `origin` è `openthread/openthread`, usato solo in lettura).
+- **Prima sonda di scala:** `kNumSleepyRouters` da 3 a 6 → **0/6**. Due cause distinte:
+  - **Bug #21 — RISOLTO.** Uno Sleepy Router che origina un pacchetto per un nodo non adiacente, con primo hop un Router-peer sleepy, lo spediva via CSL senza Mesh Header; il hop successivo doveva rifare l'Address Resolution e la risposta scadeva. Fix in `PrepareFrameForCslNeighbor()` (Mesh Header quando `Message::GetMeshDest()` ≠ RLOC16 del Router-peer) e in `SendMessage()` (`SetMeshDest()` esplicito nel ramo unicast verso un Router-peer, perché i metadati azzerati valgono `0x0000`, un RLOC valido). Verificato nei due sensi: senza il fix 6/6 fallimenti allo Step 6, con il fix 20/20.
+  - **Timeout di priming troppo stretto — non un bug del protocollo.** Il ping di priming tra vicini sleepy richiede quasi sempre l'Address Resolution via CSL: misurati 639-1279 ms contro il default di 1 s. Aggiunto `kPrimingResponseTimeout = 3 s` nel test.
+- **`test_sleepy_router_chain` ora usa 6 Sleepy Router** (20/20, meno di un secondo a run). `peer`, `parent`, `purge`, `desync` passano. FTD+MTD compilano con `-Werror` in Thread 1.4, Thread 1.1 e Thread 1.4 con `CSL_TRANSMITTER_ENABLE=0` (non è stato rilanciato `script/check-simulation-build` completo).
+- **Nuovo file `CONCETTI.md`:** promemoria di teoria (CSL, code indirette, Mesh Header, priorità, MPL, insidie dei test Nexus) da ripassare.
+- Dettaglio completo: design log §3 Tappa G ("Estensione a 6 Sleepy Router") e §4 bug #21.
+
 ### Aperto / limiti noti
 - **Bug #20 — LIMITE NOTO (non è una perdita).** Un messaggio in coda indiretta per un Router-peer irraggiungibile resta trattenuto fino all'aging del vicino (~100 s), poi lo svuota il fix #12. Misurato con `desync`: de-sync a 560 ms, messaggio ancora in coda a 30 s, coda vuota a 120 s. Deciso di non scrivere codice: ritardo limitato, la forma grave era il #19, il fix toccherebbe `CslTxScheduler::HandleSentFrame()` condiviso con i Child. Strada pronta se servisse: riusare `IndirectTxAttempts` per Router/Parent (non provata). Riserve: pressione sui buffer a scala non misurata; `InvokeTxCallback` ritardato; nessuna affermazione sul comportamento dello stock con un Child che sparisce. Design log §3 Tappa G, §4 bug #20.
-- **La scala vera.** Il test ha 3 Router sleepy in catena; molti nodi, traffico concorrente e pressione sui buffer non sono misurati.
+- **La scala vera.** Il test ha 6 Router sleepy in catena; molti nodi (griglia/mesh densa), traffico concorrente e pressione sui buffer non sono misurati. **Prossimo passo.**
+- **Eco MPL verso il mittente (fork, da decidere).** Il loop multicast sui Router in `SendMessage()` ri-accoda un multicast anche verso il Router-peer da cui era arrivato (manca l'equivalente di `!child.HasIp6Address(source)` dei Child): ogni eco costa una finestra CSL. Va deciso insieme alla domanda "quale multicast entra nella coda CSL di un Router-peer" (design log §6, punto 0quinquies).
+- **Consegne duplicate (stock, più frequenti nel fork).** Se un messaggio più prioritario sostituisce quello il cui frame CSL è in volo, `CslTxScheduler::Update()` ignora l'esito del frame e il messaggio viene ritrasmesso come frame nuovo. Stesso comportamento dello stock con un Child CSL: non toccato, da quantificare a scala.
 - **`script/make-pretty check`** non verificabile in questo ambiente (richiede `clang-format` 19.1.7), da rifare prima di una submission.
 
 ---
@@ -204,7 +215,7 @@ Test OTNS: 20 ping, 3 ricevuti. Fallimenti: sempre 4 tentativi CSL consecutivi s
 `Mle::RetxTracker::RetryInfo::DetachIfMaxAttemptsReached()` (mle.cpp) — la chiamata a `BecomeDetached()` è commentata, sostituita con un log ("HACK: Max attempts reached, detach blocked"). Il device non si stacca più mai automaticamente sui retry MLE esauriti. Da riabilitare o sostituire con qualcosa di più mirato prima di un uso reale.
 
 ### 7.3 — Scenario "purge" — caso principale risolto, resta un sotto-caso
-Il caso principale (un Router lascia `RouterTable` con messaggi ancora in coda) è risolto e coperto dal bug #12, con `test_sleepy_router_purge` verificato in entrambe le direzioni (2026-10-06). Il sotto-caso "Router-peer de-sincronizzato ma ancora valido" è il bug #20, ora un limite noto (§3). Resta, mai testato, il caso in `RequestMessageUpdate(Parent&)`/`RequestMessageUpdate(Router&)` in cui il cursore (`GetIndirectMessage()`) punti a un messaggio il cui stato "pending" sia diventato falso nel frattempo (equivalente del "Block A" della versione Child). Rimandato esplicitamente.
+Il caso principale (un Router lascia `RouterTable` con messaggi ancora in coda) è risolto e coperto dal bug #12, con `test_sleepy_router_purge` verificato in entrambe le direzioni (2026-10-06). Il sotto-caso "Router-peer de-sincronizzato ma ancora valido" è il bug #20, ora un limite noto (§3). Resta, mai testato, il caso in `RequestMessageUpdate(Parent&)`/`RequestMessageUpdate(Router&)` in cui il cursore (`GetIndirectMessage()`) punti a un messaggio il cui stato "pending" sia diventato falso nel frattempo (equivalente del "Block A" della versione Child). Rimandato esplicitamente. **2026-10-07:** osservato con la catena a 6 il caso vicino "cursore spostato mentre il frame è in volo" — produce un duplicato, ma è lo stesso comportamento dello stock (vedi §3, consegne duplicate).
 
 ### 7.4 — Fallback pragmatico: disabilitato ma non rimosso
 `MeshForwarder::HandleFrameRequest()` (`mesh_forwarder.cpp`, non quella di `CslTxScheduler`) contiene ancora il fix "storico" con cui è iniziato questo lavoro — `TxDelay` calcolato al volo per un frame diretto verso il parent sincronizzato — ma dentro un blocco `#if 0` (verificato 2026-10-06, `mesh_forwarder.cpp:739`): disabilitato, non attivo. Tenuto come riferimento storico; da rimuovere o giustificare prima di una PR.
@@ -216,7 +227,7 @@ Il Router ora duty-cicla davvero il radio, verificato su OTNS e Nexus (`test_sle
 `CalculatePollPeriod()`, ramo `mRetxMode`: periodo di poll sovrascritto con un valore fisso di 25000ms, indipendentemente dal calcolo precedente. Tech debt noto, non bloccante.
 
 ### 7.7 — Copertura di test automatica
-Cinque test Nexus (`peer`, `parent`, `purge`, `desync`, `chain`) più un test Python OTNS per il bug #12 coprono Router-peer, Child→Parent-sleepy, purge, de-sync e una catena di 3 Sleepy Router. Restano scoperti: scenari con molti nodi, il sotto-caso del §7.3, e il fatto che le varianti di `script/check-simulation-build` non sono un ciclo di regressione automatico dedicato a questo fork.
+Cinque test Nexus (`peer`, `parent`, `purge`, `desync`, `chain`) più un test Python OTNS per il bug #12 coprono Router-peer, Child→Parent-sleepy, purge, de-sync e una catena di 6 Sleepy Router (da 3 a 6 il 2026-10-07). Restano scoperti: scenari con molti nodi, il sotto-caso del §7.3, e il fatto che le varianti di `script/check-simulation-build` non sono un ciclo di regressione automatico dedicato a questo fork.
 
 ---
 

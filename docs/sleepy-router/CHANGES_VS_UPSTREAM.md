@@ -106,7 +106,7 @@ Registrati in `CMakeLists.txt` con `ot_nexus_test(...)`:
 - `test_sleepy_parent.cpp` — lo scenario originale Child → Parent sleepy.
 - `test_sleepy_router_purge.cpp` — regressione del bug #12. Verificato in entrambe le direzioni: fallisce senza il fix, passa con il fix.
 - `test_sleepy_router_desync.cpp` — de-sync del peer e misura del tempo di trattenimento del messaggio (limite noto #20).
-- `test_sleepy_router_chain.cpp` — catena Leader → relay → 3 Sleepy Router consecutivi.
+- `test_sleepy_router_chain.cpp` — catena Leader → relay → 6 Sleepy Router consecutivi (portata da 3 a 6 il 2026-10-07, bug #21).
 
 ---
 
@@ -136,6 +136,7 @@ Dettaglio e causa radice di ciascuno in `DESIGN_LOG.md` §4.
 | 18 | Coda diretta bloccata su un Router che inoltra | `mDelayNextTx` non ripulito alla conversione a indiretto. |
 | 19 | Fallimento di sicurezza intermittente | Un MLE Announce (Key ID Mode 2) con CSL IE non veniva cifrato da nessuno. Risolto in due parti. |
 | 20 | Messaggio trattenuto per un Router irraggiungibile | **Limite noto**, non un bug: vedi §5. |
+| 21 | In una catena di 6, la risposta dell'ultimo nodo non arriva | Un pacchetto originato localmente e mandato via CSL a un Router-peer intermedio partiva senza Mesh Header. |
 
 Una costante: molti di questi sono **assunzioni implicite di ruolo** ("chi arriva qui è sempre un Child sempre acceso con un solo Parent") che il codice stock dava per scontate.
 
@@ -145,7 +146,7 @@ Una costante: molti di questi sono **assunzioni implicite di ruolo** ("chi arriv
 
 - **Bug #20.** Un messaggio in coda per un Router-peer irraggiungibile ma ancora vicino valido resta trattenuto fino all'aging del vicino (~100 s), poi viene pulito dal fix #12. Misurato con `desync`: de-sync a 560 ms, in coda a 30 s, vuota a 120 s. Deciso di non scrivere codice. Riserve: pressione sui buffer a scala non misurata; il callback di fine invio è ritardato; non verificato il comportamento dello stock con un Child che sparisce.
 - **Filtro radio CSL a singolo peer.** Per un Router il filtro è un segnaposto: evita il crash ma non risolve il limite, rilevante solo su hardware reale.
-- **Scala.** Verificata una catena di 3 Sleepy Router. Molti nodi e traffico concorrente non sono misurati.
+- **Scala.** Verificata una catena di 6 Sleepy Router. Molti nodi e traffico concorrente non sono misurati. Con la catena a 6 si vedono già due effetti non corretti: l'eco di un multicast MPL verso il Router-peer da cui era arrivato, e consegne duplicate quando un messaggio più prioritario sostituisce un frame CSL in volo (comportamento dello stock, più frequente nel fork). Vedi `DESIGN_LOG.md` §3 Tappa G.
 - **Periodo CSL fisso**, nessun parametro configurabile.
 - **Cifratura dell'Announce diretto** non osservata con una cattura dedicata: evidenza indiretta (12/12 e nessuna riga `security`/`MIC` nei log del test di catena, ma il livello di log Nexus potrebbe non mostrarle).
 
