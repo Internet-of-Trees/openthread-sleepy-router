@@ -554,22 +554,35 @@ bool IndirectSender::AcceptSupervisionMessage(const Message &aMessage)
 #if OPENTHREAD_FTD
 void IndirectSender::AddMessageForSleepyRouter(Message &aMessage, Router &aRouter)
 {
+    uint16_t routerIndex;
     // TODO: check the Router is, in-fact, sleepy
     OT_ASSERT(aRouter.IsCslSynchronized());
 
-    aMessage.SetPendingForRouter(aRouter.GetRouterId());
+    routerIndex = Get<RouterTable>().GetRouterIndex(aRouter);
+
+    // Mirrors `AddMessageForSleepyChild()`: idempotent per Router-peer, and `RouterMask` (unlike the
+    // single-slot representation this replaced) lets the same message be pending for more than one
+    // Router-peer at once -- needed by the multicast branch of `SendMessage()`, which calls this once
+    // per CSL-synchronized Router-peer for the same message (see docs/sleepy-router/DESIGN_LOG.md,
+    // Tappa G, bug #15).
+    VerifyOrExit(!aMessage.GetIndirectTxRouterMask().Has(routerIndex));
+
+    aMessage.GetIndirectTxRouterMask().Add(routerIndex);
     aRouter.IncrementIndirectMessageCount();
     RequestMessageUpdate(aRouter);
+
+exit:
+    return;
 }
 
 Error IndirectSender::RemoveMessageFromSleepyRouter(Message &aMessage, Router &aRouter)
 {
-    Error error = kErrorNone;
-    // TODO: verify that the Router in the message is the one im operating for (i guess?)
-    VerifyOrExit(aMessage.IsPendingForRouter(aRouter.GetRouterId()));
+    Error    error       = kErrorNone;
+    uint16_t routerIndex = Get<RouterTable>().GetRouterIndex(aRouter);
 
-    // clear the pending for Router field
-    aMessage.ClearPendingForRouter();
+    VerifyOrExit(aMessage.GetIndirectTxRouterMask().Has(routerIndex));
+
+    aMessage.GetIndirectTxRouterMask().Remove(routerIndex);
     aRouter.DecrementIndirectMessageCount();
 
     RequestMessageUpdate(aRouter);
@@ -621,7 +634,8 @@ void IndirectSender::HandleSentFrameToCslRouter(const Mac::TxFrame &aFrame,
 
     if (message != nullptr)
     {
-        Error        txError = aError;
+        Error        txError     = aError;
+        uint16_t     routerIndex = Get<RouterTable>().GetRouterIndex(aRouter);
         Mac::Address macDest;
 
         aRouter.SetIndirectMessage(nullptr);
@@ -643,9 +657,9 @@ void IndirectSender::HandleSentFrameToCslRouter(const Mac::TxFrame &aFrame,
         // same, not sure because we are accessing the MeshForwarder mCounters
         Get<MeshForwarder>().mCounters.UpdateOnTxDone(*message, aRouter.GetIndirectTxSuccess());
 
-        if (message->IsPendingForRouter(aRouter.GetRouterId()))
+        if (message->GetIndirectTxRouterMask().Has(routerIndex))
         {
-            message->ClearPendingForRouter();
+            message->GetIndirectTxRouterMask().Remove(routerIndex);
             aRouter.DecrementIndirectMessageCount();
         }
 
@@ -692,11 +706,12 @@ void IndirectSender::UpdateIndirectMessage(Router &aRouter)
 
 Message *IndirectSender::FindQueuedMessageForSleepyRouter(Router &aRouter, MessageChecker aChecker)
 {
-    Message *match = nullptr;
+    Message *match       = nullptr;
+    uint16_t routerIndex = Get<RouterTable>().GetRouterIndex(aRouter);
 
     for (Message &message : Get<MeshForwarder>().mSendQueue)
     {
-        if (message.IsPendingForRouter(aRouter.GetRouterId()) && aChecker(message))
+        if (message.GetIndirectTxRouterMask().Has(routerIndex) && aChecker(message))
         {
             match = &message;
             break;
@@ -727,17 +742,19 @@ exit:
 
 // GAMA: mirrors `ClearAllMessagesForSleepyChild()` above. Called from `Mle::RemoveNeighbor()` when a
 // Router-peer is removed (link timeout, role change, etc.) so any message still queued indirectly for
-// it (`Message::IsPendingForRouter()`) is released instead of leaking forever in `mSendQueue` -- see the
-// "purge scenario" analysis in docs/sleepy-router/DESIGN_LOG.md, section 6.
+// it (`Message::GetIndirectTxRouterMask()`) is released instead of leaking forever in `mSendQueue` -- see
+// the "purge scenario" analysis in docs/sleepy-router/DESIGN_LOG.md, section 6.
 void IndirectSender::ClearAllMessagesForSleepyRouter(Router &aRouter)
 {
+    uint16_t routerIndex = Get<RouterTable>().GetRouterIndex(aRouter);
+
     VerifyOrExit(aRouter.GetIndirectMessageCount() > 0);
 
     for (Message &message : Get<MeshForwarder>().mSendQueue)
     {
-        if (message.IsPendingForRouter(aRouter.GetRouterId()))
+        if (message.GetIndirectTxRouterMask().Has(routerIndex))
         {
-            message.ClearPendingForRouter();
+            message.GetIndirectTxRouterMask().Remove(routerIndex);
         }
 
         Get<MeshForwarder>().RemoveMessageIfNoPendingTx(message);
@@ -944,6 +961,31 @@ Error IndirectSender::PrepareFrameForCslNeighbor(Mac::TxFrame &aFrame,
 
         ExitNow();
     }
+
+#if OPENTHREAD_FTD
+    if (message->GetType() == Message::kType6lowpan)
+    {
+        // GAMA: a message already mesh-header-encapsulated by an earlier hop -- pure relay
+        // through an intermediate sleepy Router, neither originated nor terminating here.
+        // Mirrors the `kType6lowpan` branch of `MeshForwarder::HandleFrameRequest()`'s direct
+        // path. Without this, such a message fell through the `kTypeIp6` check below, and this
+        // function returned `kErrorNone` without ever building `aFrame` -- an uninitialized frame
+        // later misread as having security enabled with garbage key material. See bug #16, Tappa
+        // G, in docs/sleepy-router/DESIGN_LOG.md.
+        //
+        // `macAddrs.mSource` must be set explicitly here (unlike the `kTypeIp6` branch below,
+        // which derives it from the IP6 header via `DetermineMacSourceAddress()`): a mesh-relayed
+        // message carries no IP6 header of its own to read from. Mirrors `UpdateMeshRoute()`'s own
+        // `mMacAddrs.mSource.SetShort(Get<Mle::Mle>().GetRloc16())` for the direct path. Missing
+        // this left the frame's source address as the default "None", which made the receiving
+        // Router unable to resolve a sending neighbor (`ProcessReceiveSecurity()`'s
+        // `aNeighbor == nullptr`) and reject the frame outright -- bug #17, found verifying this
+        // same fix.
+        macAddrs.mSource.SetShort(Get<Mle::Mle>().GetRloc16());
+        aContext.mMessageNextOffset = Get<MessageFramer>().PrepareMeshFrame(aFrame, *message, macAddrs);
+        ExitNow();
+    }
+#endif
 
     VerifyOrExit(message->GetType() == Message::kTypeIp6);
 

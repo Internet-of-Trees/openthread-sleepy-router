@@ -2537,7 +2537,7 @@ private:
     bool mRequestRouteTlv : 1;
     bool mHasRestored : 1;
     bool mInitiallyAttachedAsSleepy : 1;
-    // GAMA
+    // GAMA 
     bool       mIsSleepyRouter;
     DeviceRole mRole;
     DeviceRole mLastSavedRole;

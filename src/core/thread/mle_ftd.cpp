@@ -3144,7 +3144,7 @@ void Mle::RemoveNeighbor(Neighbor &aNeighbor)
 
         mNeighborTable.Signal(NeighborTable::kRouterRemoved, aNeighbor);
         // GAMA: mirrors the `ClearAllMessagesForSleepyChild()` call in the Child branch above -- without
-        // it, any message still queued indirectly for this Router-peer (`Message::IsPendingForRouter()`)
+        // it, any message still queued indirectly for this Router-peer (`Message::GetIndirectTxRouterMask()`)
         // would leak forever, and its `RouterId` could later be reassigned to an unrelated Router (see
         // docs/sleepy-router/DESIGN_LOG.md, section 6, "purge scenario").
 #if OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE

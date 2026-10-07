@@ -28,18 +28,18 @@
 
 // Nexus port of the "purge scenario" regression test already covered on OTNS
 // (pylibs/unittests/test_sleepy_router_purge.py). See docs/sleepy-router/DESIGN_LOG.md,
-// bug #12: a message queued indirectly for a Sleepy Router (`Message::IsPendingForRouter()`)
+// bug #12: a message queued indirectly for a Sleepy Router (`Message::GetIndirectTxRouterMask()`)
 // used to leak forever if that Router disappeared from the network before the message
 // was ever transmitted, because `Mle::RemoveNeighbor()` had no equivalent of
 // `IndirectSender::ClearAllMessagesForSleepyChild()` for a removed Router. Fixed by
 // `IndirectSender::ClearAllMessagesForSleepyRouter()`.
 //
 // Unlike the OTNS version, this uses Nexus's whitebox C++ API instead of CLI/log
-// scraping: `Core::SetNodeEnabled(id, false)` stops the peer's Thread stack in the same
-// simulated instant as the fire-and-forget `SendEchoRequest()` call (no `AdvanceTime()`
-// in between), guaranteeing the message is still queued when the peer goes silent, and
-// `MessagePool::GetFreeBufferCount()` gives a precise before/after buffer count instead
-// of parsing `bufferinfo` CLI output.
+// scraping: `Node::SetPosition()` moves the peer out of radio range in the same simulated
+// instant as the fire-and-forget `SendEchoRequest()` call (no `AdvanceTime()` in between),
+// guaranteeing the message is still queued when the peer goes silent, and `MeshForwarder`'s
+// own send-queue message count gives a precise before/after count instead of parsing
+// `bufferinfo` CLI output.
 
 #include <stdio.h>
 
@@ -59,6 +59,9 @@ static constexpr uint32_t kCslSyncTime        = 5 * 1000;
  * timeout that follow it, so `Mle::RemoveNeighbor()` fires for the now-silent peer.
  */
 static constexpr uint32_t kNeighborAgingTimeout = 180 * 1000;
+
+/** Distance beyond which the Nexus radio model drops every frame (RSSI below -100 dBm). */
+static constexpr float kUnreachableDistance = 2000.0f;
 
 void TestSleepyRouterPurge(void)
 {
@@ -143,7 +146,10 @@ void TestSleepyRouterPurge(void)
     // preserving the "still queued, never transmitted" guarantee this test relies on.
     nexus.AdvanceTime(0);
 
-    nexus.SetNodeEnabled(router2.GetId(), false);
+    // `Core::SetNodeEnabled(false)` does not silence the Nexus radio (it still ACKs before any MAC-level
+    // check), so the queued message would simply get delivered instead of being purged. Move Router_2 out
+    // of range instead: the radio model drops anything below -100 dBm.
+    router2.SetPosition(kUnreachableDistance, 0);
 
     router1.Get<MeshForwarder>().GetQueueInfo(sendQueueInfo, reassemblyQueueInfo);
     Log("Router_1 send-queue message count right after Router_2 goes silent: %u", sendQueueInfo.mNumMessages);

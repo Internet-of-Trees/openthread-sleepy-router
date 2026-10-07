@@ -72,7 +72,9 @@ void MessageFramer::PrepareMacHeaders(Mac::TxFrame &aTxFrame, Mac::TxFrame::Info
     if (neighbor == nullptr)
     {
 #if OPENTHREAD_FTD
-        if (aTxFrameInfo.mAddrs.mDestination.IsBroadcast() && Get<Mac::Mac>().GetSleepyRouterCslPeriod() > 0)
+        if (aTxFrameInfo.mAddrs.mDestination.IsBroadcast() && Get<Mac::Mac>().GetSleepyRouterCslPeriod() > 0 &&
+            (aTxFrameInfo.mSecurityLevel == Mac::Frame::kSecurityNone ||
+             aTxFrameInfo.mKeyIdMode == Mac::Frame::kKeyIdMode1))
         {
             aTxFrameInfo.mAppendCslIe = true;
             aTxFrameInfo.mVersion     = Mac::Frame::kVersion2015;

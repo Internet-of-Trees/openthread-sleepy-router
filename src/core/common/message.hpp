@@ -59,6 +59,7 @@
 #include "mac/mac_types.hpp"
 #include "thread/child_mask.hpp"
 #include "thread/link_quality.hpp"
+#include "thread/router_mask.hpp"
 #include "thread/thread_link_info.hpp"
 
 /**
@@ -233,7 +234,6 @@ protected:
 #if OPENTHREAD_CONFIG_TIME_SYNC_ENABLE
         uint8_t mTimeSyncSeq; // The time sync sequence.
 #endif
-        uint8_t mPendingRouterId : 6; // the bit used to represent the ID of the pending Sleepy Router
         uint16_t mLength;      // Current message length (number of bytes).
         uint16_t mOffset;      // A byte offset within the message.
         uint16_t mReserved;    // Number of reserved bytes (for header).
@@ -251,7 +251,8 @@ protected:
         RssAverager mRssAverager; // The averager maintaining the received signal strength (RSS) average.
         LqiAverager mLqiAverager; // The averager maintaining the Link quality indicator (LQI) average.
 #if OPENTHREAD_FTD
-        ChildMask mChildMask; // ChildMask to indicate which sleepy children need to receive this.
+        ChildMask  mChildMask;  // ChildMask to indicate which sleepy children need to receive this.
+        RouterMask mRouterMask; // RouterMask to indicate which sleepy Router-peers need to receive this.
 #endif
     };
 
@@ -1212,6 +1213,26 @@ public:
      * @returns A reference to the indirect transmission `ChildMask`.
      */
     const ChildMask &GetIndirectTxChildMask(void) const { return GetMetadata().mChildMask; }
+
+    /**
+     * Gets the indirect transmission `RouterMask` associated with this `Message`.
+     *
+     * The `RouterMask` indicates the set of Router-peers for which this message is scheduled for indirect (CSL)
+     * transmission.
+     *
+     * @returns A reference to the indirect transmission `RouterMask`.
+     */
+    RouterMask &GetIndirectTxRouterMask(void) { return GetMetadata().mRouterMask; }
+
+    /**
+     * Gets the indirect transmission `RouterMask` associated with this `Message`.
+     *
+     * The `RouterMask` indicates the set of Router-peers for which this message is scheduled for indirect (CSL)
+     * transmission.
+     *
+     * @returns A reference to the indirect transmission `RouterMask`.
+     */
+    const RouterMask &GetIndirectTxRouterMask(void) const { return GetMetadata().mRouterMask; }
 #endif
 
     /**
@@ -1313,12 +1334,6 @@ public:
     bool IsPendingForParent(void) const { return GetMetadata().mPendingForParent; }
     void SetPendingForParent(void) { GetMetadata().mPendingForParent = true; }
     void ClearPendingForParent(void) { GetMetadata().mPendingForParent = false; }
-
-    // GAMA checkers for sleepyRouter csl functionality
-    bool IsPendingForRouter(uint8_t aRouterId) const { return GetMetadata().mPendingRouterId == aRouterId + 1; }
-    bool IsPendingForAnyRouter(void) const { return GetMetadata().mPendingRouterId != 0; }
-    void SetPendingForRouter(uint8_t aRouterId) { GetMetadata().mPendingRouterId = aRouterId + 1; }
-    void ClearPendingForRouter(void) { GetMetadata().mPendingRouterId = 0; }
 
     /**
      * Unschedules forwarding using direct transmission.

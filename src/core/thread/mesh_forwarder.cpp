@@ -1026,7 +1026,7 @@ bool MeshForwarder::RemoveMessageIfNoPendingTx(Message &aMessage)
 
 #if OPENTHREAD_FTD
     VerifyOrExit(!aMessage.IsDirectTransmission() && aMessage.GetIndirectTxChildMask().IsEmpty() &&
-                 !aMessage.IsPendingForParent() && !aMessage.IsPendingForAnyRouter());
+                 !aMessage.IsPendingForParent() && aMessage.GetIndirectTxRouterMask().IsEmpty());
 #else
     VerifyOrExit(!aMessage.IsDirectTransmission() && !aMessage.IsPendingForParent());
 #endif

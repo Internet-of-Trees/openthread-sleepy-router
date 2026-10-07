@@ -176,6 +176,14 @@ build_all_features()
     CFLAGS="${cppflags[*]} ${CFLAGS}" CXXFLAGS="${cppflags[*]} ${CXXFLAGS}" \
         "$(dirname "$0")"/cmake-build simulation "${options[@]}" -DOT_FULL_LOGS=ON
 
+    # Build Thread 1.4 with CSL transmitter disabled while Header IE support stays enabled
+    # (OPENTHREAD_CONFIG_MAC_HEADER_IE_SUPPORT defaults to 1 for Thread >= 1.2, independently of
+    # OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE), to catch code that assumes the two are never split.
+    reset_source
+    CFLAGS="${cppflags[*]} ${CFLAGS} -DOPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE=0" \
+        CXXFLAGS="${cppflags[*]} ${CXXFLAGS} -DOPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE=0" \
+        "$(dirname "$0")"/cmake-build simulation "${options[@]}"
+
     # Build with Vendor Extension
     reset_source
     "$(dirname "$0")"/cmake-build simulation \

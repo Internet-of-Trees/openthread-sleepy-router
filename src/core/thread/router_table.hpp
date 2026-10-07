@@ -421,6 +421,15 @@ public:
     Error SetRouterIdRange(uint8_t aMinRouterId, uint8_t aMaxRouterId);
 #endif
 
+    /**
+     * Returns the router table index for a given `Router` instance.
+     *
+     * @param[in]  aRouter  A reference to a `Router`.
+     *
+     * @returns The index corresponding to @p aRouter.
+     */
+    uint16_t GetRouterIndex(const Router &aRouter) const { return mRouters.IndexOf(aRouter); }
+
     // The following methods are intended to support range-based `for`
     // loop iteration over the router and should not be used
     // directly.
