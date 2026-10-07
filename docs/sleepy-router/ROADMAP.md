@@ -27,7 +27,7 @@ Due traguardi, in sequenza:
 
 ---
 
-## 3. Stato attuale (aggiornato 2026-09-24)
+## 3. Stato attuale (aggiornato 2026-10-06)
 
 ### Fatto
 - [x] Router (FTD) può entrare in modalità Sleepy Router (`sleepyrouter enable/disable`, `Mle::SetSleepyRouterMode`)
@@ -62,8 +62,35 @@ Due traguardi, in sequenza:
 - [x] **Matrice Nexus ampliata a 3 test, tutti passanti**: aggiunti `test_sleepy_parent.cpp` (lo scenario originale Child→Parent-sleepy, Tappe A-D, mai testato automaticamente prima) e `test_sleepy_router_purge.cpp` (porting whitebox del test Python OTNS del bug #12). Nessun nuovo bug di prodotto trovato in questo giro, solo due sottigliezze di Nexus (tasklet asincrono per l'invio ICMP, `MessagePool::GetFreeBufferCount()` inutilizzabile su Nexus per via dell'heap esterno) — documentate nei commenti del codice dei test.
 - [x] **Bug #14 trovato e risolto da `script/check-simulation-build`** (checklist di verifica finale, non un nuovo test): la variante Thread 1.1 (niente Header IE, niente CSL) non compilava — famiglia di guardie `#if` incoerenti, codice che chiama funzioni CSL gated correttamente ma i chiamanti gated solo da `#if OPENTHREAD_FTD`, mai esercitati finché nessuna build usata finora (ot-rfsim/OTNS, Nexus) provava mai Thread <1.2. Corretto in `mac.cpp`, `mac_frame.cpp`, `mesh_forwarder_ftd.cpp`, `mesh_forwarder_mtd.cpp`, `message.hpp` — dettaglio completo in design log §4. **Run finale completo confermato pulito**: tutte le 20 varianti di build dello script (Thread 1.1/1.4, NCP, multi-radio TREL, ecc.) passano senza errori.
 
-### Non risolto / bloccante
-(nessun item bloccante aperto al momento — vedi §6 del design log per il lavoro futuro non bloccante)
+### Tappa G — scala: catena di N Router sleepy consecutivi ✅ catena di 3 superata (2026-10-06), la scala vera resta aperta
+Primo passo concreto sulla domanda "lo Sleepy Router convive con reti a molti nodi?": nuovo test Nexus (`tests/nexus/test_sleepy_router_chain.cpp`) con tre Router sleepy consecutivi tra un Leader e un relay sempre acceso, topologia forzata multi-hop via `AllowLinkBetween()`. Buildato pulito; ha trovato e fatto risolvere un bug reale (#15, sotto) legato alla competizione tra più Router sleepy per lo stesso messaggio — mai esercitabile prima perché nessun test precedente aveva due Sleepy Router adiacenti tra loro. Fix verificato (zero crash su 3 run). Ha anche trovato un secondo problema, distinto e ancora aperto: l'echo end-to-end attraverso l'intera catena di 4 hop non arriva. Vedi design log §3 Tappa G per l'analisi completa.
+
+**Aggiornamento 2026-10-06:** il problema rimasto aperto (l'echo che non arriva) era il bug #19, ora risolto in entrambe le parti: il test di catena passa **12/12**. Il bug #20 si è rivelato un limite noto, non una perdita. Resta da misurare la scala vera (molti nodi, traffico concorrente).
+
+### Risolto in questa tappa
+- **Catena di Sleepy Router consecutivi — crash per competizione su un messaggio (bug #15, Tappa G), RISOLTO 2026-10-02**. `mPendingRouterId` (slot singolo) sostituito da `RouterMask` (bitmask, mirror di `ChildMask`, `src/core/thread/router_mask.hpp`) — un messaggio può ora essere pending per più Router-peer sleepy contemporaneamente senza che l'uno sovrascriva l'altro, esattamente il requisito introdotto (inconsapevolmente) dal loop multicast di Tappa F/bug #10. Verificato su 3 run consecutive del test di catena: zero crash.
+
+### Risolto in questa tappa (continua)
+- **Nessun percorso CSL-indiretto per un hop di relay intermedio (bug #16, Tappa G), RISOLTO 2026-10-02**. `UpdateIp6RouteFtd()` e `UpdateMeshRoute()` (`mesh_forwarder_ftd.cpp`) ora convertono a indiretto-CSL anche quando il vicino sleepy è solo un hop intermedio, non solo quando è la destinazione finale (bug #11 copriva solo quel caso). Trovato e risolto anche un terzo limite preesistente lungo il percorso: `PrepareFrameForCslNeighbor()` non sapeva costruire un frame per un messaggio di puro inoltro mesh (`Message::kType6lowpan`), fallendo silenziosamente e producendo un frame corrotto (crash a valle in `Mac::ProcessTransmitSecurity`). Verificato su 5 run, zero crash, zero regressioni.
+
+### Risolto in questa tappa (continua, 2)
+- **Fallimento di sicurezza durante ricezione CSL tra due Sleepy Router adiacenti (bug #17, RISOLTO)**. Causa: il fix del bug #16 impostava solo l'indirizzo MAC di destinazione nel nuovo ramo per i messaggi di puro inoltro mesh, mai quello sorgente — il ricevente non riusciva a identificare il mittente (`aNeighbor == nullptr` in `ProcessReceiveSecurity()`). Risolto con una riga (`macAddrs.mSource.SetShort(...)`), verificato su 5 run senza fallimenti di sicurezza.
+
+### Risolto in questa tappa (continua, 3)
+- **Un Sleepy Router che inoltra traffico altrui restava bloccato per sempre nella coda diretta (bug #18, RISOLTO)**. Causa: `mDelayNextTx` (flag di collision-avoidance, impostato da `UpdateMeshRoute()`/`UpdateIp6RouteFtd()` quando il prossimo hop non è la destinazione finale) non veniva mai ripulito quando quello stesso messaggio viene convertito a CSL-indiretto — terza conseguenza diretta del fix del bug #16 (il meccanismo preesistente assumeva che ogni messaggio con questo flag passasse prima o poi dalla trasmissione diretta). Risolto azzerando il flag al momento della conversione, in entrambe le funzioni. **Verificato su 8 run: 3 completano con successo end-to-end — la prima volta in assoluto che questo scenario funziona per intero.**
+
+### Risolto in questa tappa (continua, 4)
+- **Guardie di compilazione non standard (`#if`), VERIFICATO 2026-10-02**. Bug #14 aveva mostrato un buco nelle guardie `#if` per Thread <1.2; restava da verificare la combinazione opposta, mai esercitata da nessuna build: `OPENTHREAD_CONFIG_MAC_CSL_TRANSMITTER_ENABLE=0` con `HEADER_IE_SUPPORT=1` (disaccoppiati di default per Thread ≥1.2). Build Thread 1.4 completa (FTD+MTD) con `CSL_TRANSMITTER_ENABLE` forzato a 0: compila pulita, zero warning/errori — nessuna guardia mancante. Aggiunta come variante permanente in `script/check-simulation-build-cmake` (subito dopo Thread 1.4 full-features + full-logs), così resta sotto regressione automatica invece che verifica manuale. Chiude il punto 7 di design log §6 (vedi anche §4 lì per la tabella bug).
+
+### Risolto in questa tappa (continua, 5) — 2026-10-06
+- **Bug #19 — RISOLTO, parte A e parte B.** Era un MLE Announce (Key ID Mode 2) con CSL IE mai cifrato: `Mac` rimanda la cifratura dei frame con CSL IE a `SubMac`, che però cifra solo Mode 1. Parte A (2026-10-05): il loop multicast sui Router in `SendMessage()` esclude i messaggi MLE fuori canale (`isOffChannelMle`). Parte B (2026-10-06): `MessageFramer::PrepareMacHeaders()` non aggiunge il CSL IE a un frame broadcast cifrato non Mode 1 (`mSecurityLevel == kSecurityNone || mKeyIdMode == kKeyIdMode1`). Verificato in ricezione che il CSL IE su un frame Mode 2 è inutile: `Mac::ProcessCsl()` ignora tutto ciò che non è Mode 1. Alternativa scartata: estendere `SubMac` a Mode 2 (il materiale di chiave Mode 2 vive in `Mac`). Test di catena **12/12**. Limite della verifica: la cifratura dell'Announce diretto non è stata osservata con una cattura dedicata, l'evidenza è indiretta. Design log §3 Tappa G, §4 bug #19.
+- **Test Nexus `desync` e `purge` corretti.** `SetNodeEnabled(false)` non silenzia la radio Nexus (manda comunque l'ACK), ora entrambi usano `Node::SetPosition(2000, 0)` (RSSI sotto -100 dBm oltre ~1000 unità). `purge` è stato verificato in entrambe le direzioni: senza il fix del bug #12 **fallisce** (resta 1 messaggio in coda), con il fix passa — prima passava anche senza il fix e non proteggeva nulla. `desync` passa.
+- **Verifica finale:** `script/check-simulation-build` completo → `EXIT=0`, 21 configurazioni, zero errori (su una copia dei soli sorgenti: lo script va lanciato da una directory di build vuota e fallisce se la radice del repo ha già un `CMakeCache.txt` in-source). Suite Nexus Sleepy Router tutta verde.
+
+### Aperto / limiti noti
+- **Bug #20 — LIMITE NOTO (non è una perdita).** Un messaggio in coda indiretta per un Router-peer irraggiungibile resta trattenuto fino all'aging del vicino (~100 s), poi lo svuota il fix #12. Misurato con `desync`: de-sync a 560 ms, messaggio ancora in coda a 30 s, coda vuota a 120 s. Deciso di non scrivere codice: ritardo limitato, la forma grave era il #19, il fix toccherebbe `CslTxScheduler::HandleSentFrame()` condiviso con i Child. Strada pronta se servisse: riusare `IndirectTxAttempts` per Router/Parent (non provata). Riserve: pressione sui buffer a scala non misurata; `InvokeTxCallback` ritardato; nessuna affermazione sul comportamento dello stock con un Child che sparisce. Design log §3 Tappa G, §4 bug #20.
+- **La scala vera.** Il test ha 3 Router sleepy in catena; molti nodi, traffico concorrente e pressione sui buffer non sono misurati.
+- **`script/make-pretty check`** non verificabile in questo ambiente (richiede `clang-format` 19.1.7), da rifare prima di una submission.
 
 ---
 
@@ -72,7 +99,7 @@ Due traguardi, in sequenza:
 ### Tappa A — Fondamenta strutturali ✅ fatta (2026-09-24)
 `router.hpp`: `Router` eredita `CslNeighbor` invece di `Neighbor` direttamente. `Parent` (che eredita `Router`) riceve così i tre mixin (`CslTxScheduler::NeighborInfo`, `DataPollHandler::NeighborInfo`, `IndirectSender::NeighborInfo`) per transitività, senza doverli più dichiarare esplicitamente — rimossa la vecchia dichiarazione multipla su `Parent` e i campi CSL duplicati. Vedi §5.1 per il ragionamento e il bug che questo ha risolto.
 
-### Tappa B — Unificare la preparazione del frame 🔄 in corso
+### Tappa B — Unificare la preparazione del frame ✅ fatta (verificato 2026-10-06: `PrepareFrameForParent` non esiste più nel codice)
 File: `indirect_sender.hpp`/`.cpp`.
 `PrepareFrameForChild` e `PrepareFrameForParent` sono risultate strutturalmente identiche (stessi accessor generici del mixin: `GetMacAddress`, `GetIndirectMessage`, `GetIndirectFragmentOffset`, `GetIndirectMessageCount` — nessun riferimento a `ChildTable`/`ChildSupervisor`). Fusa in una `PrepareFrameForCslNeighbor(Mac::TxFrame&, FrameContext&, CslNeighbor&)` senza cast (fatto, 2026-09-24).
 
@@ -82,15 +109,15 @@ File: `indirect_sender.hpp`/`.cpp`.
 
 Quindi: `PrepareFrameForChild` **resta** (serve a `DataPollHandler`, non è morta). Solo `PrepareFrameForParent` diventa superflua una volta che `CslTxScheduler::HandleFrameRequest` chiama `PrepareFrameForCslNeighbor` al posto suo — quella sì va rimossa. **Lezione generale:** prima di dichiarare una funzione "non più chiamata da nessuno", cercare in tutto `src/core`, mai in una sola sottocartella.
 
-### Tappa C — Discriminare solo dove serve davvero
+### Tappa C — Discriminare solo dove serve davvero ✅ fatta (verificato 2026-10-06: `HandleSentFrameToCslNeighbor()` smista Child/Router/Parent, `indirect_sender.cpp`)
 File: `indirect_sender.cpp`.
 `HandleSentFrameToChild` **non** è pura (usa `ChildSupervisor`, `SourceMatchController`, bitmask multi-child) — resta separata da quella per Parent/Router-peer. Ma il suo dispatcher `HandleSentFrameToCslNeighbor` va corretto: invece del cast cieco a `Child&`, usare `Get<ChildTable>().Contains(aCslNeighbor)` (stesso idioma già usato in `mesh_forwarder_ftd.cpp::SendMessage()`) per instradare correttamente.
 
-### Tappa D — Ritirare `mSchedulingParent`
+### Tappa D — Ritirare `mSchedulingParent` ✅ fatta (verificato 2026-10-06: `mSchedulingParent` non esiste più in `src/`)
 File: `csl_tx_scheduler.hpp`/`.cpp`.
 Con B e C fatte: `RescheduleCslTx()` include il Parent nello stesso loop/confronto dei Child (`bestNeighbor = &parent` è legale ora); `HandleFrameRequest()` perde il ramo `if (mSchedulingParent)`, un solo percorso generico; `HandleSentFrame()` usa solo la versione a 3 parametri già generica (di serie, non nostra). Si rimuovono: il campo `mSchedulingParent`, la funzione `HandleSentFrameToParent` (ridondante).
 
-### Tappa E — Da "il mio Parent" a "un Router-peer qualsiasi"
+### Tappa E — Da "il mio Parent" a "un Router-peer qualsiasi" ✅ fatta (coperta da `test_sleepy_router_peer` e `test_sleepy_router_chain`; `RouterMask` al posto del bit singolo)
 File: `router_table.hpp`/`.cpp`, `mesh_forwarder_ftd.cpp`, `mesh_forwarder_mtd.cpp`, `indirect_sender.cpp`.
 - `RescheduleCslTx()`: loop sui vicini di `RouterTable` CSL-sincronizzati (mirror del loop `ChildTable`), non più un solo controllo sul Parent singolo.
 - `SendMessage()`: riconoscere "il prossimo salto è un Router-peer sleepy", non solo "sono Child del mio Parent".
@@ -168,26 +195,28 @@ Nota interessante non ancora verificata: OTNS è un simulatore a eventi discreti
 
 ## 7. Problemi noti / tech debt
 
-### 7.1 — Packet loss residua Child→Parent (NON RISOLTO)
+### 7.1 — Packet loss residua Child→Parent (RISOLTO per riflesso, 2026-09-29 — vedi design log §5)
+**Aggiornamento:** ripetuto il test originale, 20/20 ping, packet loss 0.0%; nessun fix era stato scritto pensando a questo problema. Il testo sotto è la nota originale, tenuta per storia.
+
 Test OTNS: 20 ping, 3 ricevuti. Fallimenti: sempre 4 tentativi CSL consecutivi senza ack, poi abbandono. **Ipotesi testate ed escluse:** canale sbagliato (verificato via log diagnostico, canale sempre = PAN channel). **Ipotesi indebolita:** drift di sincronizzazione nel tempo (il Router calcola la fase su una griglia assoluta fissa dal tempo radio zero, dovrebbe restare valida indipendentemente da quanto tempo è passato). **Sospetto attuale, non verificato:** dato che il Router probabilmente non spegne mai la radio (vedi 7.5), il problema potrebbe essere nel modo in cui `ot-rfsim` gestisce una trasmissione con `TxDelay` impostato (schedulazione radio ritardata), più che nella logica di protocollo.
 
 ### 7.2 — Detach automatico disabilitato (rischioso)
 `Mle::RetxTracker::RetryInfo::DetachIfMaxAttemptsReached()` (mle.cpp) — la chiamata a `BecomeDetached()` è commentata, sostituita con un log ("HACK: Max attempts reached, detach blocked"). Il device non si stacca più mai automaticamente sui retry MLE esauriti. Da riabilitare o sostituire con qualcosa di più mirato prima di un uso reale.
 
-### 7.3 — Scenario "purge" non gestito
-In `RequestMessageUpdate(Parent&)` non è gestito il caso in cui il cursore (`GetIndirectMessage()`) punti a un messaggio il cui `IsPendingForParent()` è nel frattempo diventato falso (equivalente al "Block A" della versione Child). Deciso di rimandarlo esplicitamente.
+### 7.3 — Scenario "purge" — caso principale risolto, resta un sotto-caso
+Il caso principale (un Router lascia `RouterTable` con messaggi ancora in coda) è risolto e coperto dal bug #12, con `test_sleepy_router_purge` verificato in entrambe le direzioni (2026-10-06). Il sotto-caso "Router-peer de-sincronizzato ma ancora valido" è il bug #20, ora un limite noto (§3). Resta, mai testato, il caso in `RequestMessageUpdate(Parent&)`/`RequestMessageUpdate(Router&)` in cui il cursore (`GetIndirectMessage()`) punti a un messaggio il cui stato "pending" sia diventato falso nel frattempo (equivalente del "Block A" della versione Child). Rimandato esplicitamente.
 
-### 7.4 — Fallback pragmatico ancora presente
-`MeshForwarder::HandleFrameRequest()` (mesh_forwarder.cpp, non quella di `CslTxScheduler`) contiene ancora il fix "storico" con cui è iniziato questo lavoro — `TxDelay` calcolato al volo per un frame diretto verso il parent sincronizzato, bypassando `CslTxScheduler`/`IndirectSender`. Tenuto come rete di sicurezza; da rimuovere solo dopo aver isolato e confermato che la pipeline nuova regge da sola (compreso risolvere 7.1).
+### 7.4 — Fallback pragmatico: disabilitato ma non rimosso
+`MeshForwarder::HandleFrameRequest()` (`mesh_forwarder.cpp`, non quella di `CslTxScheduler`) contiene ancora il fix "storico" con cui è iniziato questo lavoro — `TxDelay` calcolato al volo per un frame diretto verso il parent sincronizzato — ma dentro un blocco `#if 0` (verificato 2026-10-06, `mesh_forwarder.cpp:739`): disabilitato, non attivo. Tenuto come riferimento storico; da rimuovere o giustificare prima di una PR.
 
-### 7.5 — Router non implementa davvero il duty-cycling radio
-Vedi Tappa F. Nessuna modifica di questo fork tocca `sub_mac.cpp`. `CSL_RECEIVER_ENABLE` è spento di default e mai attivato per FTD in questa build.
+### 7.5 — Router e duty-cycling radio: RISOLTO (Tappa F)
+Il Router ora duty-cicla davvero il radio, verificato su OTNS e Nexus (`test_sleepy_router_peer` campiona `mRadio.mState == kStateSleep`). Il fork non modifica `sub_mac.cpp` (i commit che lo toccano sono stock): il sonno fisico è sbloccato da `mac.cpp` e `mle.cpp` (`IsCslSupported()`, `SetCslCapable`, `UpdateIdleMode()`), vedi Tappa F. `CSL_RECEIVER_ENABLE` era già attivo nella nostra build.
 
 ### 7.6 — `data_poll_sender.cpp`, valore fisso
 `CalculatePollPeriod()`, ramo `mRetxMode`: periodo di poll sovrascritto con un valore fisso di 25000ms, indipendentemente dal calcolo precedente. Tech debt noto, non bloccante.
 
-### 7.7 — Nessuna copertura di test automatica
-Nessun test Nexus/unit per `CslTxScheduler`/`IndirectSender` lato Parent o Router-peer. Tutta la validazione finora è manuale via OTNS.
+### 7.7 — Copertura di test automatica
+Cinque test Nexus (`peer`, `parent`, `purge`, `desync`, `chain`) più un test Python OTNS per il bug #12 coprono Router-peer, Child→Parent-sleepy, purge, de-sync e una catena di 3 Sleepy Router. Restano scoperti: scenari con molti nodi, il sotto-caso del §7.3, e il fatto che le varianti di `script/check-simulation-build` non sono un ciclo di regressione automatico dedicato a questo fork.
 
 ---
 
@@ -197,3 +226,9 @@ Nessun test Nexus/unit per `CslTxScheduler`/`IndirectSender` lato Parent o Route
 2. `cd /mnt/hdd/ot-ns && otns` — va lanciato da questa directory (root del repo OTNS), altrimenti non trova i binari in `ot-rfsim/ot-versions/`.
 3. `log debug`, `add router x 100 y 100`, `add med x 130 y 100`, `watch 1 2`, `go 10`, `node 1 "sleepyrouter enable"`, `go 10`, `ping 2 1 count 20 interval 1`.
 4. Log completi (non troncati dalla CLI) su disco: `/mnt/hdd/ot-ns/tmp/0_<id>.log`.
+
+### Test Nexus (regressione automatica, singolo processo)
+
+1. `cd /mnt/hdd/ot-ns/openthread && top_builddir=nexus_test ./tests/nexus/build.sh` — ricompila tutta la suite Nexus (anche i test cert esistenti), non solo i nostri.
+2. Singolo test: `./nexus_test/tests/nexus/nexus_<nome> <nome>.json`, es. `./nexus_test/tests/nexus/nexus_sleepy_router_chain test_sleepy_router_chain.json`.
+3. Su crash: `coredumpctl list` per trovare il PID, poi `coredumpctl gdb <pid>` seguito da `bt` (non `bt full`, troppo rumoroso con i tipi `Heap::String`/`Nexus::Node`) per lo stack trace.
