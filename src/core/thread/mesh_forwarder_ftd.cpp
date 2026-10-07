@@ -146,6 +146,11 @@ void MeshForwarder::SendMessage(OwnedPtr<Message> aMessagePtr)
                         Router *router = static_cast<Router *>(neighbor);
                         if (router->IsCslSynchronized() && (router->GetCslPeriod() > 0))
                         {
+                            // The destination is the Router-peer itself (its RLOC or link-local
+                            // address), so no Mesh Header is needed. `UpdateIp6RouteFtd()` never
+                            // runs for this message and the zeroed metadata would read as RLOC16
+                            // 0x0000, so record the mesh destination explicitly.
+                            message.SetMeshDest(router->GetRloc16());
                             mIndirectSender.AddMessageForSleepyRouter(message, *router);
                         }
                         else

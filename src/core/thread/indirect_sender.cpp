@@ -945,6 +945,7 @@ Error IndirectSender::PrepareFrameForCslNeighbor(Mac::TxFrame &aFrame,
     Ip6::Header    ip6Header;
     Mac::Addresses macAddrs;
     uint16_t       directTxOffset;
+    bool           addMeshHeader = false;
 
     // both Child and Router can now be CslNeighbors
     // i should probably if-else the Child - Router case (?)
@@ -999,13 +1000,27 @@ Error IndirectSender::PrepareFrameForCslNeighbor(Mac::TxFrame &aFrame,
     {
         macAddrs.mDestination.SetExtendedFromIid(ip6Header.GetDestination().GetIid());
     }
+#if OPENTHREAD_FTD
+    else if (!ip6Header.GetDestination().IsMulticast() && Get<RouterTable>().Contains(aCslNeighbor) &&
+             (message->GetMeshDest() != aCslNeighbor.GetRloc16()))
+    {
+        // A Router-peer, unlike a Child, can be an intermediate hop toward a farther mesh
+        // destination, so the frame needs a Mesh Header. Mirrors `UpdateIp6RouteFtd()`, which
+        // records the mesh destination on the message (`SetMeshDest()`) before converting it to
+        // CSL-indirect tx. Without this, the next hop received a bare IPv6 packet and had to
+        // resolve the destination again. See bug #21 in docs/sleepy-router/DESIGN_LOG.md.
+        addMeshHeader = true;
+        macAddrs.mSource.SetShort(Get<Mle::Mle>().GetRloc16());
+    }
+#endif
 
     // Prepare the data frame from previous child's indirect offset.
 
     directTxOffset = message->GetOffset();
     message->SetOffset(aCslNeighbor.GetIndirectFragmentOffset());
 
-    aContext.mMessageNextOffset = Get<MessageFramer>().PrepareFrame(aFrame, *message, macAddrs);
+    aContext.mMessageNextOffset = Get<MessageFramer>().PrepareFrame(
+        aFrame, *message, macAddrs, addMeshHeader, Get<Mle::Mle>().GetRloc16(), message->GetMeshDest());
 
     message->SetOffset(directTxOffset);
 

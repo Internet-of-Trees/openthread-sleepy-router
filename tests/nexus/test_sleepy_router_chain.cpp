@@ -29,7 +29,7 @@
 // Scale regression test for the "Sleepy Router" fork (see docs/sleepy-router/DESIGN_LOG.md):
 // the three existing Nexus tests (`test_sleepy_router_peer.cpp`, `test_sleepy_parent.cpp`,
 // `test_sleepy_router_purge.cpp`) only ever place a single Sleepy Router next to an always-on
-// neighbor (Leader or MED Child). This test chains *three consecutive* Sleepy Routers between
+// neighbor (Leader or MED Child). This test chains `kNumSleepyRouters` consecutive Sleepy Routers between
 // a Leader and an always-on relay, which introduces something none of those tests exercise:
 // Sleepy<->Sleepy adjacency, where both sides of a link may be physically asleep at once.
 //
@@ -41,6 +41,11 @@
 // requires sending to a neighbor that may already be physically asleep (it was enabled earlier in
 // the chain-building loop and may have long since settled into real duty-cycling), unlike every
 // prior test where the "student" of a forced sync ping was always a node that never sleeps.
+//
+// Note: with `kPrimingResponseTimeout` each priming ping advances time by several seconds, and
+// the chain still passes, so in practice the newly enabled node also learns its neighbor's
+// schedule from the CSL IE carried by broadcast frames. The ordering below is kept as a
+// conservative choice, not because it was shown to be required.
 //
 // The ordering below sidesteps that by processing the chain pair-by-pair, left to right, and
 // doing both priming pings for a pair *immediately* after enabling the new node's Sleepy Router
@@ -61,10 +66,11 @@ namespace Nexus {
 
 /**
  * Number of consecutive Sleepy Routers chained between the always-on relay and the far end
- * of the path. Three is the minimum chain long enough to show whether per-hop CSL latency
- * compounds linearly or pathologically, without making the test unwieldy to read/debug.
+ * of the path. Raised from 3 to 6 once longer chains exposed bug #21 (Mesh Header lost on the
+ * CSL path when a Sleepy Router originates a message for a non-neighbor), which a chain of 3
+ * masked: the next hop re-resolved the destination in time. Each run is still well under a second.
  */
-static constexpr uint16_t kNumSleepyRouters = 3;
+static constexpr uint16_t kNumSleepyRouters = 6;
 
 static constexpr uint32_t kFormNetworkTime    = 13 * 1000;
 static constexpr uint32_t kAttachToRouterTime = 200 * 1000;
@@ -76,6 +82,15 @@ static constexpr uint32_t kAttachToRouterTime = 200 * 1000;
  * this point every pairwise schedule is already learned, so there is no more race to avoid.
  */
 static constexpr uint32_t kCslSettleTime = 5 * 1000;
+
+/**
+ * Response timeout for each single-hop priming ping. The default of `SendAndVerifyEchoRequest()`
+ * (1s) is too tight here: the replying node usually still has to resolve the sender's ML-EID, so
+ * the AddrQuery, the AddrNotify and the reply each wait for a CSL window, behind higher-priority
+ * multicast (MLE Advertisements, MPL) queued for the same neighbor. With a chain of 6 this was
+ * measured at up to ~1.3s. See docs/sleepy-router/DESIGN_LOG.md, Tappa G.
+ */
+static constexpr uint32_t kPrimingResponseTimeout = 3 * 1000;
 
 static constexpr uint16_t kCslPollSteps  = 60;
 static constexpr uint32_t kCslPollStepMs = 10;
@@ -111,10 +126,10 @@ void TestSleepyRouterChain(void)
 {
     /**
      * Topology:
-     *   Leader ---- Relay ---- Sleepy_1 ---- Sleepy_2 ---- Sleepy_3
+     *   Leader ---- Relay ---- Sleepy_1 ---- Sleepy_2 ---- ... ---- Sleepy_N
      *
      * `AllowLinkBetween()` restricts the radio layer to these links only, so the Leader can
-     * only ever reach Sleepy_3 by routing through Relay, Sleepy_1 and Sleepy_2 -- a real
+     * only ever reach Sleepy_N by routing through Relay and every Sleepy Router before it -- a real
      * multi-hop path, not just multiple nodes that happen to all hear each other directly.
      */
 
@@ -144,7 +159,7 @@ void TestSleepyRouterChain(void)
     VerifyOrQuit(relay.Get<Mle::Mle>().IsRouter());
 
     Log("---------------------------------------------------------------------------------------");
-    Log("Step 3: build the rest of the chain -- three Routers, each joining the previous one --");
+    Log("Step 3: build the rest of the chain -- the Routers each join the previous one --");
     Log("        all still fully awake at this point, no Sleepy Router mode enabled yet. Joining");
     Log("        while awake sidesteps the harder problem of attaching *through* a node that is");
     Log("        already asleep, which this test does not attempt to solve.");
@@ -184,7 +199,8 @@ void TestSleepyRouterChain(void)
             Ip6::Address curMleid  = cur.Get<Mle::Mle>().GetMeshLocalEid();
             Ip6::Address prevMleid = prev.Get<Mle::Mle>().GetMeshLocalEid();
 
-            nexus.SendAndVerifyEchoRequest(cur, curMleid, prevMleid);
+            nexus.SendAndVerifyEchoRequest(cur, curMleid, prevMleid, /* aPayloadSize */ 0,
+                                           /* aHopLimit */ Ip6::kDefaultHopLimit, kPrimingResponseTimeout);
         }
         VerifyLearnedCslSchedule(/* aObserver */ prev, /* aSubject */ cur);
 
@@ -196,7 +212,8 @@ void TestSleepyRouterChain(void)
             Ip6::Address prevMleid = prev.Get<Mle::Mle>().GetMeshLocalEid();
             Ip6::Address curMleid  = cur.Get<Mle::Mle>().GetMeshLocalEid();
 
-            nexus.SendAndVerifyEchoRequest(prev, prevMleid, curMleid);
+            nexus.SendAndVerifyEchoRequest(prev, prevMleid, curMleid, /* aPayloadSize */ 0,
+                                           /* aHopLimit */ Ip6::kDefaultHopLimit, kPrimingResponseTimeout);
             VerifyLearnedCslSchedule(/* aObserver */ cur, /* aSubject */ prev);
         }
     }
@@ -228,7 +245,7 @@ void TestSleepyRouterChain(void)
     }
 
     Log("---------------------------------------------------------------------------------------");
-    Log("Step 6: end-to-end delivery across all four hops, both directions, through three");
+    Log("Step 6: end-to-end delivery across the whole chain, both directions, through all");
     Log("        consecutive Sleepy Routers");
 
     {
